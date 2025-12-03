@@ -1,4 +1,3 @@
-// src/db.js
 const mysql = require("mysql2");
 
 const pool = mysql.createPool({
@@ -12,7 +11,7 @@ const pool = mysql.createPool({
   queueLimit: 0,
 });
 
-// LOG só pra ver se conectou
+// Teste de conexão
 pool.getConnection((err, connection) => {
   if (err) {
     console.error("ERRO AO CONECTAR NO BANCO:", err.code, err.message);
