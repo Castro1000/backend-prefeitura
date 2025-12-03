@@ -27,7 +27,7 @@ app.post("/api/login", (req, res) => {
   }
 
   const sql = `
-    SELECT id, nome, login, perfil, setor_id
+    SELECT id, nome, login, perfil, setor_id, cpf, barco
     FROM usuarios
     WHERE LOWER(login) = LOWER(?) AND senha = ? AND ativo = 1
     LIMIT 1
@@ -49,19 +49,21 @@ app.post("/api/login", (req, res) => {
       id: row.id,
       nome: row.nome,
       login: row.login,
-      tipo: (row.perfil || "").toLowerCase(), // emissor, representante, transportador, admin
+      tipo: (row.perfil || "").toLowerCase(), // emissor / representante / transportador / admin
       setor_id: row.setor_id,
+      cpf: row.cpf || null,
+      barco: row.barco || null,
     };
 
     res.json({
       user,
-      token: "ok", // placeholder; no futuro podemos colocar JWT
+      token: "ok", // placeholder pra futuro JWT
     });
   });
 });
 
 // ======================================================
-// ROTAS DE USUÁRIOS (CRUD simples, SEM cpf/barco)
+// ROTAS DE USUÁRIOS (CRUD) - /api/usuarios
 // ======================================================
 const router = express.Router();
 
@@ -70,7 +72,7 @@ const router = express.Router();
  */
 router.get("/usuarios", (req, res) => {
   const sql = `
-    SELECT id, nome, login, perfil AS tipo
+    SELECT id, nome, login, perfil AS tipo, cpf, barco
     FROM usuarios
     WHERE ativo = 1
     ORDER BY nome
@@ -87,9 +89,11 @@ router.get("/usuarios", (req, res) => {
 
 /**
  * CRIAR novo usuário
+ * - representante: CPF obrigatório
+ * - transportador: CPF/CNPJ + barco obrigatórios
  */
 router.post("/usuarios", (req, res) => {
-  let { nome, login, senha, tipo } = req.body;
+  let { nome, login, senha, tipo, cpf, barco } = req.body;
 
   if (!nome || !login || !senha || !tipo) {
     return res
@@ -98,7 +102,21 @@ router.post("/usuarios", (req, res) => {
   }
 
   login = String(login).trim();
-  tipo = String(tipo).toLowerCase(); // emissor, representante, transportador, admin
+  tipo = String(tipo).toLowerCase();
+  cpf = (cpf || "").trim();
+  barco = (barco || "").trim();
+
+  if (tipo === "representante" && !cpf) {
+    return res
+      .status(400)
+      .json({ error: "CPF do representante é obrigatório." });
+  }
+
+  if (tipo === "transportador" && (!cpf || !barco)) {
+    return res.status(400).json({
+      error: "CPF/CNPJ e nome do barco são obrigatórios para transportador.",
+    });
+  }
 
   const checkSql =
     "SELECT id FROM usuarios WHERE LOWER(login) = LOWER(?) LIMIT 1";
@@ -116,32 +134,39 @@ router.post("/usuarios", (req, res) => {
     }
 
     const insertSql = `
-      INSERT INTO usuarios (nome, login, senha, perfil, ativo)
-      VALUES (?, ?, ?, ?, 1)
+      INSERT INTO usuarios (nome, login, senha, perfil, cpf, barco, ativo)
+      VALUES (?, ?, ?, ?, ?, ?, 1)
     `;
 
-    db.query(insertSql, [nome, login, senha, tipo], (err, result) => {
-      if (err) {
-        console.error("Erro ao criar usuário:", err);
-        return res.status(500).json({ error: "Erro ao criar usuário." });
-      }
+    db.query(
+      insertSql,
+      [nome, login, senha, tipo, cpf || null, barco || null],
+      (err, result) => {
+        if (err) {
+          console.error("Erro ao criar usuário:", err);
+          return res.status(500).json({ error: "Erro ao criar usuário." });
+        }
 
-      res.status(201).json({
-        id: result.insertId,
-        nome,
-        login,
-        tipo,
-      });
-    });
+        res.status(201).json({
+          id: result.insertId,
+          nome,
+          login,
+          tipo,
+          cpf: cpf || null,
+          barco: barco || null,
+        });
+      }
+    );
   });
 });
 
 /**
  * ATUALIZAR usuário
+ * - mesma regra de CPF/barco
  */
 router.put("/usuarios/:id", (req, res) => {
   const { id } = req.params;
-  let { nome, login, senha, tipo } = req.body;
+  let { nome, login, senha, tipo, cpf, barco } = req.body;
 
   if (!nome || !login || !tipo) {
     return res
@@ -151,9 +176,23 @@ router.put("/usuarios/:id", (req, res) => {
 
   login = String(login).trim();
   tipo = String(tipo).toLowerCase();
+  cpf = (cpf || "").trim();
+  barco = (barco || "").trim();
 
-  const fields = ["nome = ?", "login = ?", "perfil = ?"];
-  const params = [nome, login, tipo];
+  if (tipo === "representante" && !cpf) {
+    return res
+      .status(400)
+      .json({ error: "CPF do representante é obrigatório." });
+  }
+
+  if (tipo === "transportador" && (!cpf || !barco)) {
+    return res.status(400).json({
+      error: "CPF/CNPJ e nome do barco são obrigatórios para transportador.",
+    });
+  }
+
+  const fields = ["nome = ?", "login = ?", "perfil = ?", "cpf = ?", "barco = ?"];
+  const params = [nome, login, tipo, cpf || null, barco || null];
 
   if (senha && senha.trim() !== "") {
     fields.push("senha = ?");
@@ -183,7 +222,7 @@ router.put("/usuarios/:id", (req, res) => {
 });
 
 /**
- * REMOVER usuário (DELETE definitivo; se quiser, pode trocar por ativo = 0)
+ * REMOVER usuário (DELETE definitivo)
  */
 router.delete("/usuarios/:id", (req, res) => {
   const { id } = req.params;
@@ -245,7 +284,7 @@ app.post("/api/requisicoes", (req, res) => {
       status,
       created_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDENTE', NOW())
-  `;
+ `;
 
   const params = [
     codigoPublico,
@@ -350,7 +389,11 @@ app.post("/api/requisicoes/:id/assinar", (req, res) => {
         requisicao_id, representante_id, acao, motivo_recusa, created_at
       ) VALUES (?, ?, ?, ?, NOW())
     `;
-    db.query(insertAss, [id, representante_id, novoStatus, motivo_recusa || null], () => {});
+    db.query(
+      insertAss,
+      [id, representante_id, novoStatus, motivo_recusa || null],
+      () => {}
+    );
 
     const logSql = `
       INSERT INTO requisicao_status_log (requisicao_id, status_anterior, status_novo, usuario_id, created_at)
@@ -365,8 +408,13 @@ app.post("/api/requisicoes/:id/assinar", (req, res) => {
 // TRANSPORTADOR – Validar Viagem
 app.post("/api/requisicoes/:id/validar", (req, res) => {
   const { id } = req.params;
-  const { transportador_id, tipo_validacao, codigo_lido, local_validacao, observacao } =
-    req.body;
+  const {
+    transportador_id,
+    tipo_validacao,
+    codigo_lido,
+    local_validacao,
+    observacao,
+  } = req.body;
 
   if (!transportador_id || !codigo_lido) {
     return res.status(400).json({ error: "Dados incompletos." });
@@ -442,7 +490,7 @@ app.get("/api/requisicoes", (req, res) => {
 
   db.query(sql, params, (err, rows) => {
     if (err) {
-      console.error("Erro ao listar:", err);
+      console.error("Erro ao listar requisições:", err);
       return res.status(500).json({ error: "Erro ao listar requisições." });
     }
     res.json(rows);
