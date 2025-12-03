@@ -3,11 +3,14 @@ const express = require("express");
 const router = express.Router();
 const db = require("../db");
 
-// LISTAR todos os usuários (sem senha)
+/**
+ * LISTAR usuários (somente ativos)
+ */
 router.get("/usuarios", (req, res) => {
   const sql = `
-    SELECT id, nome, login, tipo
+    SELECT id, nome, login, perfil AS tipo, cpf, barco
     FROM usuarios
+    WHERE ativo = 1
     ORDER BY nome
   `;
 
@@ -20,34 +23,11 @@ router.get("/usuarios", (req, res) => {
   });
 });
 
-// BUSCAR 1 usuário por ID (sem senha)
-router.get("/usuarios/:id", (req, res) => {
-  const { id } = req.params;
-
-  const sql = `
-    SELECT id, nome, login, tipo
-    FROM usuarios
-    WHERE id = ?
-    LIMIT 1
-  `;
-
-  db.query(sql, [id], (err, rows) => {
-    if (err) {
-      console.error("Erro ao buscar usuário:", err);
-      return res.status(500).json({ error: "Erro ao buscar usuário." });
-    }
-
-    if (rows.length === 0) {
-      return res.status(404).json({ error: "Usuário não encontrado." });
-    }
-
-    res.json(rows[0]);
-  });
-});
-
-// CRIAR novo usuário
+/**
+ * CRIAR novo usuário
+ */
 router.post("/usuarios", (req, res) => {
-  let { nome, login, senha, tipo } = req.body;
+  let { nome, login, senha, tipo, cpf, barco } = req.body;
 
   if (!nome || !login || !senha || !tipo) {
     return res
@@ -55,10 +35,11 @@ router.post("/usuarios", (req, res) => {
       .json({ error: "Nome, login, senha e tipo são obrigatórios." });
   }
 
+  // normaliza tipo (mas aceita maiúscula/minúscula)
   tipo = String(tipo).toLowerCase(); // emissor, representante, transportador, admin
+  login = String(login).trim();
 
-  // verifica se já existe login igual
-  const checkSql = "SELECT id FROM usuarios WHERE login = ? LIMIT 1";
+  const checkSql = "SELECT id FROM usuarios WHERE LOWER(login) = LOWER(?) LIMIT 1";
   db.query(checkSql, [login], (err, rows) => {
     if (err) {
       console.error("Erro ao verificar login:", err);
@@ -71,29 +52,38 @@ router.post("/usuarios", (req, res) => {
       return res.status(409).json({ error: "Já existe um usuário com esse login." });
     }
 
-    const insertSql =
-      "INSERT INTO usuarios (nome, login, senha, tipo) VALUES (?, ?, ?, ?)";
-    db.query(insertSql, [nome, login, senha, tipo], (err, result) => {
-      if (err) {
-        console.error("Erro ao criar usuário:", err);
-        return res.status(500).json({ error: "Erro ao criar usuário." });
-      }
+    const insertSql = `
+      INSERT INTO usuarios (nome, login, senha, perfil, cpf, barco, ativo)
+      VALUES (?, ?, ?, ?, ?, ?, 1)
+    `;
+    db.query(
+      insertSql,
+      [nome, login, senha, tipo, cpf || null, barco || null],
+      (err, result) => {
+        if (err) {
+          console.error("Erro ao criar usuário:", err);
+          return res.status(500).json({ error: "Erro ao criar usuário." });
+        }
 
-      // devolve o usuário criado (sem senha)
-      res.status(201).json({
-        id: result.insertId,
-        nome,
-        login,
-        tipo,
-      });
-    });
+        res.status(201).json({
+          id: result.insertId,
+          nome,
+          login,
+          tipo,
+          cpf: cpf || null,
+          barco: barco || null,
+        });
+      }
+    );
   });
 });
 
-// ATUALIZAR usuário
+/**
+ * ATUALIZAR usuário
+ */
 router.put("/usuarios/:id", (req, res) => {
   const { id } = req.params;
-  let { nome, login, senha, tipo } = req.body;
+  let { nome, login, senha, tipo, cpf, barco } = req.body;
 
   if (!nome || !login || !tipo) {
     return res
@@ -102,10 +92,11 @@ router.put("/usuarios/:id", (req, res) => {
   }
 
   tipo = String(tipo).toLowerCase();
+  login = String(login).trim();
 
   // monta campos dinamicamente
-  const fields = ["nome = ?", "login = ?", "tipo = ?"];
-  const params = [nome, login, tipo];
+  const fields = ["nome = ?", "login = ?", "perfil = ?", "cpf = ?", "barco = ?"];
+  const params = [nome, login, tipo, cpf || null, barco || null];
 
   if (senha && senha.trim() !== "") {
     fields.push("senha = ?");
@@ -134,7 +125,9 @@ router.put("/usuarios/:id", (req, res) => {
   });
 });
 
-// REMOVER usuário
+/**
+ * REMOVER usuário (aqui removendo de vez; se quiser, pode trocar por ativo=0)
+ */
 router.delete("/usuarios/:id", (req, res) => {
   const { id } = req.params;
 
