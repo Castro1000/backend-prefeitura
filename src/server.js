@@ -1,8 +1,11 @@
 // src/server.js
-require('dotenv').config();
-const express = require('express');
-const cors = require('cors');
-const db = require('./db');
+require("dotenv").config();
+const express = require("express");
+const cors = require("cors");
+const db = require("./db");
+
+// 🔹 importa rotas de usuários
+const usuariosRoutes = require("./routes/usuariosRoutes");
 
 const app = express();
 
@@ -12,18 +15,18 @@ app.use(express.json());
 // ====================================
 // ROTA DE TESTE
 // ====================================
-app.get('/api/health', (req, res) => {
-  res.json({ ok: true, message: 'API Prefeitura de Borba ON' });
+app.get("/api/health", (req, res) => {
+  res.json({ ok: true, message: "API Prefeitura de Borba ON" });
 });
 
 // ====================================
 // LOGIN (Autenticação pelo Banco)
 // ====================================
-app.post('/api/login', (req, res) => {
+app.post("/api/login", (req, res) => {
   const { login, senha } = req.body;
 
   if (!login || !senha) {
-    return res.status(400).json({ error: 'Informe login e senha.' });
+    return res.status(400).json({ error: "Informe login e senha." });
   }
 
   const sql = `
@@ -35,30 +38,42 @@ app.post('/api/login', (req, res) => {
 
   db.query(sql, [login, senha], (err, rows) => {
     if (err) {
-      console.error('Erro no login:', err);
-      return res.status(500).json({ error: 'Erro interno no servidor.' });
+      console.error("Erro no login:", err);
+      return res.status(500).json({ error: "Erro interno no servidor." });
     }
 
     if (rows.length === 0) {
-      return res.status(401).json({ error: 'Usuário ou senha inválidos.' });
+      return res.status(401).json({ error: "Usuário ou senha inválidos." });
     }
 
-    const user = rows[0];
+    const row = rows[0];
 
-    // Normaliza o perfil para minúsculas
-    user.perfil = (user.perfil || '').toLowerCase();
+    // 🔹 Normaliza: converte perfil → tipo em minúsculo
+    const user = {
+      id: row.id,
+      nome: row.nome,
+      login: row.login,
+      tipo: (row.perfil || "").toLowerCase(), // emissor, representante, transportador, admin
+      setor_id: row.setor_id,
+    };
 
     res.json({
       user,
-      token: null // no futuro adicionamos JWT se quiser
+      token: null, // no futuro adicionamos JWT se quiser
     });
   });
 });
 
 // ====================================
+// ROTAS DE USUÁRIOS (CRUD)
+// prefixo /api
+// ====================================
+app.use("/api", usuariosRoutes);
+
+// ====================================
 // EMISSOR – Criar Requisição
 // ====================================
-app.post('/api/requisicoes', (req, res) => {
+app.post("/api/requisicoes", (req, res) => {
   const {
     emissor_id,
     passageiro_nome,
@@ -70,14 +85,17 @@ app.post('/api/requisicoes', (req, res) => {
     data_ida,
     data_volta,
     horario_embarque,
-    justificativa
+    justificativa,
   } = req.body;
 
   if (!emissor_id || !passageiro_nome || !origem || !destino || !data_ida) {
-    return res.status(400).json({ error: 'Campos obrigatórios faltando.' });
+    return res.status(400).json({ error: "Campos obrigatórios faltando." });
   }
 
-  const codigoPublico = Math.random().toString(36).substring(2, 12).toUpperCase();
+  const codigoPublico = Math.random()
+    .toString(36)
+    .substring(2, 12)
+    .toUpperCase();
 
   const sql = `
     INSERT INTO requisicoes (
@@ -110,13 +128,13 @@ app.post('/api/requisicoes', (req, res) => {
     data_ida,
     data_volta || null,
     horario_embarque || null,
-    justificativa || null
+    justificativa || null,
   ];
 
   db.query(sql, params, (err, result) => {
     if (err) {
-      console.error('Erro ao criar requisição:', err);
-      return res.status(500).json({ error: 'Erro ao criar requisição.' });
+      console.error("Erro ao criar requisição:", err);
+      return res.status(500).json({ error: "Erro ao criar requisição." });
     }
 
     const insertedId = result.insertId;
@@ -130,7 +148,7 @@ app.post('/api/requisicoes', (req, res) => {
     res.status(201).json({
       id: insertedId,
       codigo_publico: codigoPublico,
-      status: 'PENDENTE'
+      status: "PENDENTE",
     });
   });
 });
@@ -138,7 +156,7 @@ app.post('/api/requisicoes', (req, res) => {
 // ====================================
 // EMISSOR – Listar Requisições
 // ====================================
-app.get('/api/requisicoes/emissor/:emissorId', (req, res) => {
+app.get("/api/requisicoes/emissor/:emissorId", (req, res) => {
   const { emissorId } = req.params;
 
   const sql = `
@@ -150,8 +168,10 @@ app.get('/api/requisicoes/emissor/:emissorId', (req, res) => {
 
   db.query(sql, [emissorId], (err, rows) => {
     if (err) {
-      console.error('Erro ao listar requisições:', err);
-      return res.status(500).json({ error: 'Erro ao listar requisições.' });
+      console.error("Erro ao listar requisições:", err);
+      return res
+        .status(500)
+        .json({ error: "Erro ao listar requisições." });
     }
     res.json(rows);
   });
@@ -160,7 +180,7 @@ app.get('/api/requisicoes/emissor/:emissorId', (req, res) => {
 // ====================================
 // REPRESENTANTE – Ver Pendentes
 // ====================================
-app.get('/api/requisicoes/pendentes', (req, res) => {
+app.get("/api/requisicoes/pendentes", (req, res) => {
   const sql = `
     SELECT *
     FROM requisicoes
@@ -170,8 +190,10 @@ app.get('/api/requisicoes/pendentes', (req, res) => {
 
   db.query(sql, (err, rows) => {
     if (err) {
-      console.error('Erro ao listar pendentes:', err);
-      return res.status(500).json({ error: 'Erro ao listar pendentes.' });
+      console.error("Erro ao listar pendentes:", err);
+      return res
+        .status(500)
+        .json({ error: "Erro ao listar pendentes." });
     }
     res.json(rows);
   });
@@ -180,15 +202,15 @@ app.get('/api/requisicoes/pendentes', (req, res) => {
 // ====================================
 // REPRESENTANTE – Aprovar/Reprovar
 // ====================================
-app.post('/api/requisicoes/:id/assinar', (req, res) => {
+app.post("/api/requisicoes/:id/assinar", (req, res) => {
   const { id } = req.params;
   const { representante_id, acao, motivo_recusa } = req.body;
 
   if (!representante_id || !acao) {
-    return res.status(400).json({ error: 'Dados incompletos.' });
+    return res.status(400).json({ error: "Dados incompletos." });
   }
 
-  const novoStatus = acao === 'APROVAR' ? 'APROVADA' : 'REPROVADA';
+  const novoStatus = acao === "APROVAR" ? "APROVADA" : "REPROVADA";
 
   const updateSql = `
     UPDATE requisicoes
@@ -198,8 +220,10 @@ app.post('/api/requisicoes/:id/assinar', (req, res) => {
 
   db.query(updateSql, [novoStatus, id], (err) => {
     if (err) {
-      console.error('Erro ao atualizar status:', err);
-      return res.status(500).json({ error: 'Erro ao atualizar status.' });
+      console.error("Erro ao atualizar status:", err);
+      return res
+        .status(500)
+        .json({ error: "Erro ao atualizar status." });
     }
 
     const insertAss = `
@@ -207,7 +231,11 @@ app.post('/api/requisicoes/:id/assinar', (req, res) => {
         requisicao_id, representante_id, acao, motivo_recusa, created_at
       ) VALUES (?, ?, ?, ?, NOW())
     `;
-    db.query(insertAss, [id, representante_id, novoStatus, motivo_recusa || null], () => {});
+    db.query(
+      insertAss,
+      [id, representante_id, novoStatus, motivo_recusa || null],
+      () => {}
+    );
 
     const logSql = `
       INSERT INTO requisicao_status_log (requisicao_id, status_anterior, status_novo, usuario_id, created_at)
@@ -222,12 +250,18 @@ app.post('/api/requisicoes/:id/assinar', (req, res) => {
 // ====================================
 // TRANSPORTADOR – Validar Viagem
 // ====================================
-app.post('/api/requisicoes/:id/validar', (req, res) => {
+app.post("/api/requisicoes/:id/validar", (req, res) => {
   const { id } = req.params;
-  const { transportador_id, tipo_validacao, codigo_lido, local_validacao, observacao } = req.body;
+  const {
+    transportador_id,
+    tipo_validacao,
+    codigo_lido,
+    local_validacao,
+    observacao,
+  } = req.body;
 
   if (!transportador_id || !codigo_lido) {
-    return res.status(400).json({ error: 'Dados incompletos.' });
+    return res.status(400).json({ error: "Dados incompletos." });
   }
 
   const sqlInsertVal = `
@@ -247,15 +281,17 @@ app.post('/api/requisicoes/:id/validar', (req, res) => {
     [
       id,
       transportador_id,
-      tipo_validacao || 'EMBARQUE',
+      tipo_validacao || "EMBARQUE",
       codigo_lido,
       local_validacao || null,
-      observacao || null
+      observacao || null,
     ],
     (err) => {
       if (err) {
-        console.error('Erro ao validar:', err);
-        return res.status(500).json({ error: 'Erro ao validar requisição.' });
+        console.error("Erro ao validar:", err);
+        return res
+          .status(500)
+          .json({ error: "Erro ao validar requisição." });
       }
 
       const updateStatus = `
@@ -271,7 +307,7 @@ app.post('/api/requisicoes/:id/validar', (req, res) => {
       `;
       db.query(logSql, [id, transportador_id], () => {});
 
-      res.json({ ok: true, status: 'UTILIZADA' });
+      res.json({ ok: true, status: "UTILIZADA" });
     }
   );
 });
@@ -279,31 +315,33 @@ app.post('/api/requisicoes/:id/validar', (req, res) => {
 // ====================================
 // RELATÓRIO / LISTA GERAL
 // ====================================
-app.get('/api/requisicoes', (req, res) => {
+app.get("/api/requisicoes", (req, res) => {
   const { data_ini, data_fim, status } = req.query;
 
-  let sql = 'SELECT * FROM requisicoes WHERE 1=1';
+  let sql = "SELECT * FROM requisicoes WHERE 1=1";
   const params = [];
 
   if (data_ini) {
-    sql += ' AND data_ida >= ?';
+    sql += " AND data_ida >= ?";
     params.push(data_ini);
   }
   if (data_fim) {
-    sql += ' AND data_ida <= ?';
+    sql += " AND data_ida <= ?";
     params.push(data_fim);
   }
-  if (status && status !== 'TODOS') {
-    sql += ' AND status = ?';
+  if (status && status !== "TODOS") {
+    sql += " AND status = ?";
     params.push(status);
   }
 
-  sql += ' ORDER BY created_at DESC';
+  sql += " ORDER BY created_at DESC";
 
   db.query(sql, params, (err, rows) => {
     if (err) {
-      console.error('Erro ao listar:', err);
-      return res.status(500).json({ error: 'Erro ao listar requisições.' });
+      console.error("Erro ao listar:", err);
+      return res
+        .status(500)
+        .json({ error: "Erro ao listar requisições." });
     }
     res.json(rows);
   });
