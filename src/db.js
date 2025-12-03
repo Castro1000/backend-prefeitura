@@ -1,5 +1,5 @@
 // src/db.js
-const mysql = require('mysql2');
+const mysql = require("mysql2");
 
 const pool = mysql.createPool({
   host: process.env.DB_HOST,
@@ -9,8 +9,17 @@ const pool = mysql.createPool({
   database: process.env.DB_NAME,
   waitForConnections: true,
   connectionLimit: 10,
-  queueLimit: 0
+  queueLimit: 0,
 });
 
-// só pra testar rapidamente, você pode usar pool.query normalmente
+// LOG só pra ver se conectou
+pool.getConnection((err, connection) => {
+  if (err) {
+    console.error("ERRO AO CONECTAR NO BANCO:", err.code, err.message);
+  } else {
+    console.log("Conexão com MySQL OK!");
+    connection.release();
+  }
+});
+
 module.exports = pool;
