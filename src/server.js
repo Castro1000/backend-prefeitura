@@ -290,7 +290,7 @@ router.delete("/usuarios/:id", (req, res) => {
 // ROTAS DO MÓDULO FLUVIAL — REQUISIÇÕES
 // ======================================================
 
-// Criar requisição
+// Criar requisição (numero_formatado = id/ano, ex: 227/2025)
 app.post("/api/requisicoes", (req, res) => {
   const {
     emissor_id,
@@ -311,14 +311,19 @@ app.post("/api/requisicoes", (req, res) => {
     return res.status(400).json({ error: "Campos obrigatórios faltando." });
   }
 
+  const ano = new Date().getFullYear();
+
+  // 1) Gera código público único
   gerarCodigoPublicoUnico((errCodigo, codigoPublico) => {
     if (errCodigo) {
       return res.status(500).json({ error: "Erro ao gerar código público." });
     }
 
-    const sql = `
+    // 2) Insere a requisição (numero_formatado ainda NULL)
+    const sqlInsert = `
       INSERT INTO requisicoes (
         codigo_publico,
+        numero_formatado,
         emissor_id,
         passageiro_nome,
         passageiro_cpf,
@@ -334,10 +339,10 @@ app.post("/api/requisicoes", (req, res) => {
         qr_hash,
         observacoes,
         created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDENTE', NULL, ?, NOW())
+      ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDENTE', NULL, ?, NOW())
     `;
 
-    const params = [
+    const paramsInsert = [
       codigoPublico,
       emissor_id,
       passageiro_nome,
@@ -353,25 +358,42 @@ app.post("/api/requisicoes", (req, res) => {
       observacoes || null,
     ];
 
-    db.query(sql, params, (err, result) => {
-      if (err) {
-        console.error("Erro ao criar requisição:", err);
+    db.query(sqlInsert, paramsInsert, (errInsert, result) => {
+      if (errInsert) {
+        console.error("Erro ao criar requisição:", errInsert);
         return res.status(500).json({ error: "Erro ao criar requisição." });
       }
 
       const insertedId = result.insertId;
+      const numero_formatado = `${insertedId}/${ano}`;
 
-      const logSql = `
-        INSERT INTO requisicao_status_log (
-          requisicao_id, status_anterior, status_novo, usuario_id, observacao, created_at
-        ) VALUES (?, NULL, 'PENDENTE', ?, 'Criação da requisição', NOW())
+      // 3) Atualiza numero_formatado com id/ano
+      const sqlUpdateNumero = `
+        UPDATE requisicoes
+        SET numero_formatado = ?
+        WHERE id = ?
       `;
-      db.query(logSql, [insertedId, emissor_id], () => {});
+      db.query(sqlUpdateNumero, [numero_formatado, insertedId], (errUpd) => {
+        if (errUpd) {
+          console.error("Erro ao atualizar numero_formatado:", errUpd);
+          // não impede de continuar, só não grava o numero_formatado
+        }
 
-      res.status(201).json({
-        id: insertedId,
-        codigo_publico: codigoPublico,
-        status: "PENDENTE",
+        // 4) Log de status inicial
+        const logSql = `
+          INSERT INTO requisicao_status_log (
+            requisicao_id, status_anterior, status_novo, usuario_id, observacao, created_at
+          ) VALUES (?, NULL, 'PENDENTE', ?, 'Criação da requisição', NOW())
+        `;
+        db.query(logSql, [insertedId, emissor_id], () => {});
+
+        // 5) Resposta
+        res.status(201).json({
+          id: insertedId,
+          codigo_publico: codigoPublico,
+          numero_formatado, // ex.: "227/2025"
+          status: "PENDENTE",
+        });
       });
     });
   });
@@ -463,8 +485,13 @@ app.post("/api/requisicoes/:id/assinar", (req, res) => {
 // Validar viagem (transportador)
 app.post("/api/requisicoes/:id/validar", (req, res) => {
   const { id } = req.params;
-  const { transportador_id, tipo_validacao, codigo_lido, local_validacao, observacao } =
-    req.body;
+  const {
+    transportador_id,
+    tipo_validacao,
+    codigo_lido,
+    local_validacao,
+    observacao,
+  } = req.body;
 
   if (!transportador_id || !codigo_lido) {
     return res.status(400).json({ error: "Dados incompletos." });
