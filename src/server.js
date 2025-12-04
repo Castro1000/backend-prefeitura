@@ -10,6 +10,40 @@ app.use(cors());
 app.use(express.json());
 
 // ======================================================
+// FUNÇÕES DE APOIO
+// ======================================================
+
+// Gera um código público de 10 caracteres (letras + números)
+function gerarCodigoPublico() {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  let codigo = "";
+  for (let i = 0; i < 10; i++) {
+    codigo += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return codigo;
+}
+
+// Garante que o codigo_publico seja único na tabela `requisicoes`
+function gerarCodigoPublicoUnico(callback) {
+  const codigo = gerarCodigoPublico();
+
+  const sql = "SELECT id FROM requisicoes WHERE codigo_publico = ? LIMIT 1";
+  db.query(sql, [codigo], (err, rows) => {
+    if (err) {
+      console.error("Erro ao verificar codigo_publico:", err);
+      return callback(err);
+    }
+
+    if (rows.length > 0) {
+      // já existe, tenta de novo
+      return gerarCodigoPublicoUnico(callback);
+    }
+
+    callback(null, codigo);
+  });
+}
+
+// ======================================================
 // ROTA DE SAÚDE
 // ======================================================
 app.get("/api/health", (req, res) => {
@@ -17,7 +51,7 @@ app.get("/api/health", (req, res) => {
 });
 
 // ======================================================
-// LOGIN (aceita maiúscula / minúscula no login)
+// LOGIN
 // ======================================================
 app.post("/api/login", (req, res) => {
   const { login, senha } = req.body;
@@ -57,28 +91,38 @@ app.post("/api/login", (req, res) => {
 
     res.json({
       user,
-      token: "ok", // placeholder pra futuro JWT
+      token: "ok", // placeholder
     });
   });
 });
 
 // ======================================================
-// ROTAS DE USUÁRIOS (CRUD) - /api/usuarios
+// ROTAS DE USUÁRIOS (CRUD)
 // ======================================================
 const router = express.Router();
 
 /**
- * LISTAR usuários (apenas ativos)
+ * LISTAR usuários (suporta filtro perfil: /api/usuarios?perfil=transportador)
  */
 router.get("/usuarios", (req, res) => {
-  const sql = `
-    SELECT id, nome, login, perfil AS tipo, cpf, barco
+  const { perfil } = req.query;
+
+  let sql = `
+    SELECT 
+      id, nome, login, perfil, cpf, barco, setor_id, ativo
     FROM usuarios
     WHERE ativo = 1
-    ORDER BY nome
   `;
+  const params = [];
 
-  db.query(sql, (err, rows) => {
+  if (perfil) {
+    sql += " AND LOWER(perfil) = LOWER(?)";
+    params.push(perfil);
+  }
+
+  sql += " ORDER BY nome";
+
+  db.query(sql, params, (err, rows) => {
     if (err) {
       console.error("Erro ao listar usuários:", err);
       return res.status(500).json({ error: "Erro ao listar usuários." });
@@ -89,11 +133,9 @@ router.get("/usuarios", (req, res) => {
 
 /**
  * CRIAR novo usuário
- * - representante: CPF obrigatório
- * - transportador: CPF/CNPJ + barco obrigatórios
  */
 router.post("/usuarios", (req, res) => {
-  let { nome, login, senha, tipo, cpf, barco } = req.body;
+  let { nome, login, senha, tipo, cpf, barco, setor_id } = req.body;
 
   if (!nome || !login || !senha || !tipo) {
     return res
@@ -107,9 +149,7 @@ router.post("/usuarios", (req, res) => {
   barco = (barco || "").trim();
 
   if (tipo === "representante" && !cpf) {
-    return res
-      .status(400)
-      .json({ error: "CPF do representante é obrigatório." });
+    return res.status(400).json({ error: "CPF do representante é obrigatório." });
   }
 
   if (tipo === "transportador" && (!cpf || !barco)) {
@@ -134,13 +174,13 @@ router.post("/usuarios", (req, res) => {
     }
 
     const insertSql = `
-      INSERT INTO usuarios (nome, login, senha, perfil, cpf, barco, ativo)
-      VALUES (?, ?, ?, ?, ?, ?, 1)
+      INSERT INTO usuarios (nome, login, senha, perfil, cpf, barco, setor_id, ativo)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 1)
     `;
 
     db.query(
       insertSql,
-      [nome, login, senha, tipo, cpf || null, barco || null],
+      [nome, login, senha, tipo, cpf || null, barco || null, setor_id || null],
       (err, result) => {
         if (err) {
           console.error("Erro ao criar usuário:", err);
@@ -151,9 +191,10 @@ router.post("/usuarios", (req, res) => {
           id: result.insertId,
           nome,
           login,
-          tipo,
+          perfil: tipo,
           cpf: cpf || null,
           barco: barco || null,
+          setor_id: setor_id || null,
         });
       }
     );
@@ -162,11 +203,10 @@ router.post("/usuarios", (req, res) => {
 
 /**
  * ATUALIZAR usuário
- * - mesma regra de CPF/barco
  */
 router.put("/usuarios/:id", (req, res) => {
   const { id } = req.params;
-  let { nome, login, senha, tipo, cpf, barco } = req.body;
+  let { nome, login, senha, tipo, cpf, barco, setor_id } = req.body;
 
   if (!nome || !login || !tipo) {
     return res
@@ -180,9 +220,7 @@ router.put("/usuarios/:id", (req, res) => {
   barco = (barco || "").trim();
 
   if (tipo === "representante" && !cpf) {
-    return res
-      .status(400)
-      .json({ error: "CPF do representante é obrigatório." });
+    return res.status(400).json({ error: "CPF do representante é obrigatório." });
   }
 
   if (tipo === "transportador" && (!cpf || !barco)) {
@@ -191,8 +229,15 @@ router.put("/usuarios/:id", (req, res) => {
     });
   }
 
-  const fields = ["nome = ?", "login = ?", "perfil = ?", "cpf = ?", "barco = ?"];
-  const params = [nome, login, tipo, cpf || null, barco || null];
+  const fields = [
+    "nome = ?",
+    "login = ?",
+    "perfil = ?",
+    "cpf = ?",
+    "barco = ?",
+    "setor_id = ?",
+  ];
+  const params = [nome, login, tipo, cpf || null, barco || null, setor_id || null];
 
   if (senha && senha.trim() !== "") {
     fields.push("senha = ?");
@@ -222,7 +267,7 @@ router.put("/usuarios/:id", (req, res) => {
 });
 
 /**
- * REMOVER usuário (DELETE definitivo)
+ * REMOVER usuário
  */
 router.delete("/usuarios/:id", (req, res) => {
   const { id } = req.params;
@@ -242,10 +287,10 @@ router.delete("/usuarios/:id", (req, res) => {
 });
 
 // ======================================================
-// ROTAS MÓDULO FLUVIAL (REQUISIÇÕES)
+// ROTAS DO MÓDULO FLUVIAL — REQUISIÇÕES
 // ======================================================
 
-// EMISSOR – Criar Requisição
+// Criar requisição
 app.post("/api/requisicoes", (req, res) => {
   const {
     emissor_id,
@@ -259,71 +304,80 @@ app.post("/api/requisicoes", (req, res) => {
     data_volta,
     horario_embarque,
     justificativa,
-  } = req.body;
+    observacoes,
+  } = req.body || {};
 
   if (!emissor_id || !passageiro_nome || !origem || !destino || !data_ida) {
     return res.status(400).json({ error: "Campos obrigatórios faltando." });
   }
 
-  const codigoPublico = Math.random().toString(36).substring(2, 12).toUpperCase();
+  gerarCodigoPublicoUnico((errCodigo, codigoPublico) => {
+    if (errCodigo) {
+      return res.status(500).json({ error: "Erro ao gerar código público." });
+    }
 
-  const sql = `
-    INSERT INTO requisicoes (
-      codigo_publico,
+    const sql = `
+      INSERT INTO requisicoes (
+        codigo_publico,
+        emissor_id,
+        passageiro_nome,
+        passageiro_cpf,
+        passageiro_matricula,
+        setor_id,
+        origem,
+        destino,
+        data_ida,
+        data_volta,
+        horario_embarque,
+        justificativa,
+        status,
+        qr_hash,
+        observacoes,
+        created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDENTE', NULL, ?, NOW())
+    `;
+
+    const params = [
+      codigoPublico,
       emissor_id,
       passageiro_nome,
-      passageiro_cpf,
-      passageiro_matricula,
-      setor_id,
+      passageiro_cpf || null,
+      passageiro_matricula || null,
+      setor_id || null,
       origem,
       destino,
       data_ida,
-      data_volta,
-      horario_embarque,
-      justificativa,
-      status,
-      created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDENTE', NOW())
- `;
+      data_volta || null,
+      horario_embarque || null,
+      justificativa || null,
+      observacoes || null,
+    ];
 
-  const params = [
-    codigoPublico,
-    emissor_id,
-    passageiro_nome,
-    passageiro_cpf || null,
-    passageiro_matricula || null,
-    setor_id || null,
-    origem,
-    destino,
-    data_ida,
-    data_volta || null,
-    horario_embarque || null,
-    justificativa || null,
-  ];
+    db.query(sql, params, (err, result) => {
+      if (err) {
+        console.error("Erro ao criar requisição:", err);
+        return res.status(500).json({ error: "Erro ao criar requisição." });
+      }
 
-  db.query(sql, params, (err, result) => {
-    if (err) {
-      console.error("Erro ao criar requisição:", err);
-      return res.status(500).json({ error: "Erro ao criar requisição." });
-    }
+      const insertedId = result.insertId;
 
-    const insertedId = result.insertId;
+      const logSql = `
+        INSERT INTO requisicao_status_log (
+          requisicao_id, status_anterior, status_novo, usuario_id, observacao, created_at
+        ) VALUES (?, NULL, 'PENDENTE', ?, 'Criação da requisição', NOW())
+      `;
+      db.query(logSql, [insertedId, emissor_id], () => {});
 
-    const logSql = `
-      INSERT INTO requisicao_status_log (requisicao_id, status_anterior, status_novo, usuario_id, created_at)
-      VALUES (?, NULL, 'PENDENTE', ?, NOW())
-    `;
-    db.query(logSql, [insertedId, emissor_id], () => {});
-
-    res.status(201).json({
-      id: insertedId,
-      codigo_publico: codigoPublico,
-      status: "PENDENTE",
+      res.status(201).json({
+        id: insertedId,
+        codigo_publico: codigoPublico,
+        status: "PENDENTE",
+      });
     });
   });
 });
 
-// EMISSOR – Listar Requisições
+// Listar por emissor
 app.get("/api/requisicoes/emissor/:emissorId", (req, res) => {
   const { emissorId } = req.params;
 
@@ -343,7 +397,7 @@ app.get("/api/requisicoes/emissor/:emissorId", (req, res) => {
   });
 });
 
-// REPRESENTANTE – Ver Pendentes
+// Pendentes
 app.get("/api/requisicoes/pendentes", (req, res) => {
   const sql = `
     SELECT *
@@ -361,7 +415,7 @@ app.get("/api/requisicoes/pendentes", (req, res) => {
   });
 });
 
-// REPRESENTANTE – Aprovar/Reprovar
+// Assinar (aprovar/reprovar)
 app.post("/api/requisicoes/:id/assinar", (req, res) => {
   const { id } = req.params;
   const { representante_id, acao, motivo_recusa } = req.body;
@@ -396,8 +450,9 @@ app.post("/api/requisicoes/:id/assinar", (req, res) => {
     );
 
     const logSql = `
-      INSERT INTO requisicao_status_log (requisicao_id, status_anterior, status_novo, usuario_id, created_at)
-      VALUES (?, 'PENDENTE', ?, ?, NOW())
+      INSERT INTO requisicao_status_log (
+        requisicao_id, status_anterior, status_novo, usuario_id, observacao, created_at
+      ) VALUES (?, 'PENDENTE', ?, ?, 'Assinatura do representante', NOW())
     `;
     db.query(logSql, [id, novoStatus, representante_id], () => {});
 
@@ -405,16 +460,11 @@ app.post("/api/requisicoes/:id/assinar", (req, res) => {
   });
 });
 
-// TRANSPORTADOR – Validar Viagem
+// Validar viagem (transportador)
 app.post("/api/requisicoes/:id/validar", (req, res) => {
   const { id } = req.params;
-  const {
-    transportador_id,
-    tipo_validacao,
-    codigo_lido,
-    local_validacao,
-    observacao,
-  } = req.body;
+  const { transportador_id, tipo_validacao, codigo_lido, local_validacao, observacao } =
+    req.body;
 
   if (!transportador_id || !codigo_lido) {
     return res.status(400).json({ error: "Dados incompletos." });
@@ -456,8 +506,9 @@ app.post("/api/requisicoes/:id/validar", (req, res) => {
       db.query(updateStatus, [id], () => {});
 
       const logSql = `
-        INSERT INTO requisicao_status_log (requisicao_id, status_anterior, status_novo, usuario_id, created_at)
-        VALUES (?, 'APROVADA', 'UTILIZADA', ?, NOW())
+        INSERT INTO requisicao_status_log (
+          requisicao_id, status_anterior, status_novo, usuario_id, observacao, created_at
+        ) VALUES (?, 'APROVADA', 'UTILIZADA', ?, 'Validação pelo transportador', NOW())
       `;
       db.query(logSql, [id, transportador_id], () => {});
 
@@ -466,7 +517,44 @@ app.post("/api/requisicoes/:id/validar", (req, res) => {
   );
 });
 
-// RELATÓRIO / LISTA GERAL
+// ======================================================
+// >>>>>>> ROTA DO CANHOTO — Buscar uma requisição específica
+// ======================================================
+app.get("/api/requisicoes/:id", (req, res) => {
+  const { id } = req.params;
+
+  const sql = `
+    SELECT
+      r.*,
+      u.nome AS emissor_nome,
+      u.cpf AS emissor_cpf,
+      s.nome AS setor_nome
+    FROM requisicoes r
+    LEFT JOIN usuarios u ON u.id = r.emissor_id
+    LEFT JOIN setores s ON s.id = r.setor_id
+    WHERE r.id = ?
+    LIMIT 1
+  `;
+
+  db.query(sql, [id], (err, rows) => {
+    if (err) {
+      console.error("Erro ao buscar requisição por ID:", err);
+      return res
+        .status(500)
+        .json({ error: "Erro ao buscar dados da requisição." });
+    }
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "Requisição não encontrada." });
+    }
+
+    res.json(rows[0]);
+  });
+});
+
+// ======================================================
+// LISTA GERAL
+// ======================================================
 app.get("/api/requisicoes", (req, res) => {
   const { data_ini, data_fim, status } = req.query;
 
@@ -503,7 +591,7 @@ app.get("/api/requisicoes", (req, res) => {
 app.use("/api", router);
 
 // ======================================================
-// SUBIR SERVIDOR
+// SERVIDOR
 // ======================================================
 const PORT = process.env.PORT || 3001;
 

@@ -5,16 +5,35 @@ const db = require("../db");
 
 /**
  * LISTAR usuários (somente ativos)
+ * Suporta query string: /usuarios?perfil=transportador
  */
 router.get("/usuarios", (req, res) => {
-  const sql = `
-    SELECT id, nome, login, perfil AS tipo, cpf, barco
+  const { perfil } = req.query;
+
+  let sql = `
+    SELECT 
+      id, 
+      nome, 
+      login, 
+      perfil,       -- deixa o nome correto!
+      cpf, 
+      barco,
+      setor_id,
+      ativo
     FROM usuarios
     WHERE ativo = 1
-    ORDER BY nome
   `;
 
-  db.query(sql, (err, rows) => {
+  const params = [];
+
+  if (perfil) {
+    sql += " AND LOWER(perfil) = LOWER(?)";
+    params.push(perfil);
+  }
+
+  sql += " ORDER BY nome";
+
+  db.query(sql, params, (err, rows) => {
     if (err) {
       console.error("Erro ao listar usuários:", err);
       return res.status(500).json({ error: "Erro ao listar usuários." });
@@ -27,7 +46,7 @@ router.get("/usuarios", (req, res) => {
  * CRIAR novo usuário
  */
 router.post("/usuarios", (req, res) => {
-  let { nome, login, senha, tipo, cpf, barco } = req.body;
+  let { nome, login, senha, tipo, cpf, barco, setor_id } = req.body;
 
   if (!nome || !login || !senha || !tipo) {
     return res
@@ -35,11 +54,16 @@ router.post("/usuarios", (req, res) => {
       .json({ error: "Nome, login, senha e tipo são obrigatórios." });
   }
 
-  // normaliza tipo (mas aceita maiúscula/minúscula)
-  tipo = String(tipo).toLowerCase(); // emissor, representante, transportador, admin
+  tipo = String(tipo).toLowerCase(); // normaliza
   login = String(login).trim();
 
-  const checkSql = "SELECT id FROM usuarios WHERE LOWER(login) = LOWER(?) LIMIT 1";
+  const checkSql = `
+    SELECT id 
+    FROM usuarios 
+    WHERE LOWER(login) = LOWER(?) 
+    LIMIT 1
+  `;
+
   db.query(checkSql, [login], (err, rows) => {
     if (err) {
       console.error("Erro ao verificar login:", err);
@@ -53,12 +77,14 @@ router.post("/usuarios", (req, res) => {
     }
 
     const insertSql = `
-      INSERT INTO usuarios (nome, login, senha, perfil, cpf, barco, ativo)
-      VALUES (?, ?, ?, ?, ?, ?, 1)
+      INSERT INTO usuarios 
+        (nome, login, senha, perfil, cpf, barco, setor_id, ativo)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 1)
     `;
+
     db.query(
       insertSql,
-      [nome, login, senha, tipo, cpf || null, barco || null],
+      [nome, login, senha, tipo, cpf || null, barco || null, setor_id || null],
       (err, result) => {
         if (err) {
           console.error("Erro ao criar usuário:", err);
@@ -69,9 +95,10 @@ router.post("/usuarios", (req, res) => {
           id: result.insertId,
           nome,
           login,
-          tipo,
+          perfil: tipo, // agora devolve corretamente
           cpf: cpf || null,
           barco: barco || null,
+          setor_id: setor_id || null,
         });
       }
     );
@@ -83,7 +110,7 @@ router.post("/usuarios", (req, res) => {
  */
 router.put("/usuarios/:id", (req, res) => {
   const { id } = req.params;
-  let { nome, login, senha, tipo, cpf, barco } = req.body;
+  let { nome, login, senha, tipo, cpf, barco, setor_id } = req.body;
 
   if (!nome || !login || !tipo) {
     return res
@@ -94,10 +121,18 @@ router.put("/usuarios/:id", (req, res) => {
   tipo = String(tipo).toLowerCase();
   login = String(login).trim();
 
-  // monta campos dinamicamente
-  const fields = ["nome = ?", "login = ?", "perfil = ?", "cpf = ?", "barco = ?"];
-  const params = [nome, login, tipo, cpf || null, barco || null];
+  // Campos que sempre atualizam
+  const fields = [
+    "nome = ?",
+    "login = ?",
+    "perfil = ?",
+    "cpf = ?",
+    "barco = ?",
+    "setor_id = ?",
+  ];
+  const params = [nome, login, tipo, cpf || null, barco || null, setor_id || null];
 
+  // opcional: atualizar senha
   if (senha && senha.trim() !== "") {
     fields.push("senha = ?");
     params.push(senha);
@@ -126,7 +161,7 @@ router.put("/usuarios/:id", (req, res) => {
 });
 
 /**
- * REMOVER usuário (aqui removendo de vez; se quiser, pode trocar por ativo=0)
+ * REMOVER usuário (remoção real; pode virar inativar se quiser)
  */
 router.delete("/usuarios/:id", (req, res) => {
   const { id } = req.params;
