@@ -43,6 +43,47 @@ function gerarCodigoPublicoUnico(callback) {
   });
 }
 
+// Gera numero_formatado único no formato NNNN.../ANO (4 a 6 dígitos)
+function gerarNumeroRequisicaoUnico(ano, callback) {
+  function tentarFaixa(min, max, proximaFaixa) {
+    const numero = Math.floor(Math.random() * (max - min + 1)) + min;
+    const numStr = `${numero}/${ano}`;
+
+    const sql = "SELECT id FROM requisicoes WHERE numero_formatado = ? LIMIT 1";
+    db.query(sql, [numStr], (err, rows) => {
+      if (err) {
+        console.error("Erro ao verificar numero_formatado:", err);
+        return callback(err);
+      }
+
+      if (rows.length > 0) {
+        // já existe → tenta novamente na mesma faixa / próxima
+        return proximaFaixa();
+      }
+
+      // único → retornamos
+      callback(null, numStr);
+    });
+  }
+
+  // 1ª tentativa: 4 dígitos (1000–9999)
+  function tentativa4() {
+    tentarFaixa(1000, 9999, tentativa5);
+  }
+
+  // 2ª tentativa: 5 dígitos (10000–99999)
+  function tentativa5() {
+    tentarFaixa(10000, 99999, tentativa6);
+  }
+
+  // 3ª tentativa: 6 dígitos (100000–999999)
+  function tentativa6() {
+    tentarFaixa(100000, 999999, tentativa6); // continua tentando até achar um livre
+  }
+
+  tentativa4();
+}
+
 // ======================================================
 // ROTA DE SAÚDE
 // ======================================================
@@ -290,7 +331,7 @@ router.delete("/usuarios/:id", (req, res) => {
 // ROTAS DO MÓDULO FLUVIAL — REQUISIÇÕES
 // ======================================================
 
-// Criar requisição (numero_formatado = id/ano, ex: 227/2025)
+// Criar requisição (numero_formatado aleatório tipo 4821/2025 ou 120493/2025)
 app.post("/api/requisicoes", (req, res) => {
   const {
     emissor_id,
@@ -319,65 +360,61 @@ app.post("/api/requisicoes", (req, res) => {
       return res.status(500).json({ error: "Erro ao gerar código público." });
     }
 
-    // 2) Insere a requisição (numero_formatado ainda NULL)
-    const sqlInsert = `
-      INSERT INTO requisicoes (
-        codigo_publico,
+    // 2) Gera numero_formatado aleatório do tipo NNNN.../ANO
+    gerarNumeroRequisicaoUnico(ano, (errNum, numero_formatado) => {
+      if (errNum) {
+        return res
+          .status(500)
+          .json({ error: "Erro ao gerar número da requisição." });
+      }
+
+      // 3) Insere a requisição
+      const sqlInsert = `
+        INSERT INTO requisicoes (
+          codigo_publico,
+          numero_formatado,
+          emissor_id,
+          passageiro_nome,
+          passageiro_cpf,
+          passageiro_matricula,
+          setor_id,
+          origem,
+          destino,
+          data_ida,
+          data_volta,
+          horario_embarque,
+          justificativa,
+          status,
+          qr_hash,
+          observacoes,
+          created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDENTE', NULL, ?, NOW())
+      `;
+
+      const paramsInsert = [
+        codigoPublico,
         numero_formatado,
         emissor_id,
         passageiro_nome,
-        passageiro_cpf,
-        passageiro_matricula,
-        setor_id,
+        passageiro_cpf || null,
+        passageiro_matricula || null,
+        setor_id || null,
         origem,
         destino,
         data_ida,
-        data_volta,
-        horario_embarque,
-        justificativa,
-        status,
-        qr_hash,
-        observacoes,
-        created_at
-      ) VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDENTE', NULL, ?, NOW())
-    `;
+        data_volta || null,
+        horario_embarque || null,
+        justificativa || null,
+        observacoes || null,
+      ];
 
-    const paramsInsert = [
-      codigoPublico,
-      emissor_id,
-      passageiro_nome,
-      passageiro_cpf || null,
-      passageiro_matricula || null,
-      setor_id || null,
-      origem,
-      destino,
-      data_ida,
-      data_volta || null,
-      horario_embarque || null,
-      justificativa || null,
-      observacoes || null,
-    ];
-
-    db.query(sqlInsert, paramsInsert, (errInsert, result) => {
-      if (errInsert) {
-        console.error("Erro ao criar requisição:", errInsert);
-        return res.status(500).json({ error: "Erro ao criar requisição." });
-      }
-
-      const insertedId = result.insertId;
-      const numero_formatado = `${insertedId}/${ano}`;
-
-      // 3) Atualiza numero_formatado com id/ano
-      const sqlUpdateNumero = `
-        UPDATE requisicoes
-        SET numero_formatado = ?
-        WHERE id = ?
-      `;
-      db.query(sqlUpdateNumero, [numero_formatado, insertedId], (errUpd) => {
-        if (errUpd) {
-          console.error("Erro ao atualizar numero_formatado:", errUpd);
-          // não impede de continuar, só não grava o numero_formatado
+      db.query(sqlInsert, paramsInsert, (errInsert, result) => {
+        if (errInsert) {
+          console.error("Erro ao criar requisição:", errInsert);
+          return res.status(500).json({ error: "Erro ao criar requisição." });
         }
+
+        const insertedId = result.insertId;
 
         // 4) Log de status inicial
         const logSql = `
@@ -391,7 +428,7 @@ app.post("/api/requisicoes", (req, res) => {
         res.status(201).json({
           id: insertedId,
           codigo_publico: codigoPublico,
-          numero_formatado, // ex.: "227/2025"
+          numero_formatado, // ex.: "4821/2025" ou "120493/2025"
           status: "PENDENTE",
         });
       });
