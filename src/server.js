@@ -592,7 +592,25 @@ app.get("/api/requisicoes/:id", (req, res) => {
       r.*,
       u.nome AS emissor_nome,
       u.cpf AS emissor_cpf,
-      s.nome AS setor_nome
+      s.nome AS setor_nome,
+      (
+        SELECT us.nome
+        FROM requisicao_status_log l
+        JOIN usuarios us ON us.id = l.usuario_id
+        WHERE l.requisicao_id = r.id
+          AND l.status_novo IN ('APROVADA','AUTORIZADA')
+        ORDER BY l.created_at DESC
+        LIMIT 1
+      ) AS representante_nome,
+      (
+        SELECT us.cpf
+        FROM requisicao_status_log l
+        JOIN usuarios us ON us.id = l.usuario_id
+        WHERE l.requisicao_id = r.id
+          AND l.status_novo IN ('APROVADA','AUTORIZADA')
+        ORDER BY l.created_at DESC
+        LIMIT 1
+      ) AS representante_cpf
     FROM requisicoes r
     LEFT JOIN usuarios u ON u.id = r.emissor_id
     LEFT JOIN setores s ON s.id = r.setor_id
