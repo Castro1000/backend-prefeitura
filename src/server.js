@@ -638,10 +638,16 @@ app.get("/api/requisicoes/:id", (req, res) => {
 // LISTA GERAL
 // ======================================================
 app.get("/api/requisicoes", (req, res) => {
-  const { data_ini, data_fim, status } = req.query;
+  const { data_ini, data_fim, status, codigo_publico } = req.query;
 
   let sql = "SELECT * FROM requisicoes WHERE 1=1";
   const params = [];
+
+  // filtro por código público (para o transportador digitar o código do canhoto)
+  if (codigo_publico) {
+    sql += " AND codigo_publico = ?";
+    params.push(codigo_publico);
+  }
 
   if (data_ini) {
     sql += " AND data_ida >= ?";
@@ -666,6 +672,7 @@ app.get("/api/requisicoes", (req, res) => {
     res.json(rows);
   });
 });
+
 
 // ======================================================
 // PLUGA AS ROTAS /api/usuarios
