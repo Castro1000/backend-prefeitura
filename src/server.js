@@ -584,6 +584,9 @@ app.post("/api/requisicoes/:id/validar", (req, res) => {
 // ======================================================
 // >>>>>>> ROTA DO CANHOTO — Buscar uma requisição específica
 // ======================================================
+// ======================================================
+// >>>>>>> ROTA DO CANHOTO — Buscar uma requisição específica (por ID)
+// ======================================================
 app.get("/api/requisicoes/:id", (req, res) => {
   const { id } = req.params;
 
@@ -633,6 +636,7 @@ app.get("/api/requisicoes/:id", (req, res) => {
     res.json(rows[0]);
   });
 });
+
 
 // ======================================================
 // LISTA GERAL
