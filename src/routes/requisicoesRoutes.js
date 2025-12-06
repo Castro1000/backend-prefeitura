@@ -36,8 +36,8 @@ function gerarCodigoPublicoUnico(callback) {
 
 /**
  * GET /requisicoes
- * Lista requisicoes para painel (validador, relatórios, etc.)
- * Aceita opcionalmente ?status=PENDENTE|APROVADA|CANCELADA
+ * Lista requisições para painel (validador, relatórios, etc.)
+ * Aceita opcionalmente ?status=PENDENTE|AUTORIZADA|CANCELADA
  */
 router.get("/requisicoes", (req, res) => {
   const { status } = req.query;
@@ -148,10 +148,10 @@ router.post("/requisicoes", (req, res) => {
       destino,
       data_ida, // "YYYY-MM-DD"
       data_volta || null,
-      horario_embarque || null, // "HH:MM:SS"
+      horario_embarque || null, // "HH:MM:SS" se algum dia vier
       justificativa || null,
       status,
-      null, // qr_hash (p/ futuro)
+      null, // qr_hash (podemos usar depois pra QR Code seguro)
       observacoes || null,
     ];
 
@@ -165,7 +165,7 @@ router.post("/requisicoes", (req, res) => {
 
       const requisicaoId = result.insertId;
 
-      // log de status (não impede o sucesso se der erro)
+      // tenta gravar o log de status (não impede o sucesso se der erro)
       const logSql = `
         INSERT INTO requisicao_status_log (
           requisicao_id,
@@ -204,8 +204,169 @@ router.post("/requisicoes", (req, res) => {
 });
 
 /**
+ * PUT /requisicoes/:id/autorizar
+ * Assinatura / autorização do representante (VALIDADOR / NIXON)
+ * Body: { usuario_id, observacao }
+ */
+router.put("/requisicoes/:id/autorizar", (req, res) => {
+  const { id } = req.params;
+  const { usuario_id, observacao } = req.body || {};
+
+  if (!usuario_id) {
+    return res
+      .status(400)
+      .json({ message: "usuario_id (validador) é obrigatório." });
+  }
+
+  // 1) busca status atual
+  const selectSql = "SELECT status FROM requisicoes WHERE id = ? LIMIT 1";
+  db.query(selectSql, [id], (errSel, rows) => {
+    if (errSel) {
+      console.error("Erro ao buscar requisição para autorizar:", errSel);
+      return res
+        .status(500)
+        .json({ message: "Erro ao buscar requisição." });
+    }
+    if (rows.length === 0) {
+      return res.status(404).json({ message: "Requisição não encontrada." });
+    }
+
+    const statusAnterior = rows[0].status;
+    const statusNovo = "AUTORIZADA";
+
+    // se já estiver autorizada, não faz nada
+    if (statusAnterior === statusNovo) {
+      return res.json({ id, status: statusNovo, message: "Já estava autorizada." });
+    }
+
+    // 2) atualiza status
+    const updateSql = "UPDATE requisicoes SET status = ? WHERE id = ?";
+    db.query(updateSql, [statusNovo, id], (errUpd) => {
+      if (errUpd) {
+        console.error("Erro ao autorizar requisição:", errUpd);
+        return res
+          .status(500)
+          .json({ message: "Erro ao autorizar requisição." });
+      }
+
+      // 3) grava log
+      const logSql = `
+        INSERT INTO requisicao_status_log (
+          requisicao_id,
+          status_anterior,
+          status_novo,
+          usuario_id,
+          observacao
+        ) VALUES (?, ?, ?, ?, ?)
+      `;
+      const logParams = [
+        id,
+        statusAnterior,
+        statusNovo,
+        usuario_id,
+        observacao || "Autorização pelo representante",
+      ];
+
+      db.query(logSql, logParams, (errLog) => {
+        if (errLog) {
+          console.error(
+            "Erro ao gravar log de autorização:",
+            errLog
+          );
+          // segue mesmo assim
+        }
+
+        return res.json({
+          id,
+          status: statusNovo,
+          message: "Requisição autorizada com sucesso.",
+        });
+      });
+    });
+  });
+});
+
+/**
+ * PUT /requisicoes/:id/cancelar
+ * Cancelamento pelo representante
+ * Body: { usuario_id, observacao }
+ */
+router.put("/requisicoes/:id/cancelar", (req, res) => {
+  const { id } = req.params;
+  const { usuario_id, observacao } = req.body || {};
+
+  if (!usuario_id) {
+    return res
+      .status(400)
+      .json({ message: "usuario_id (validador) é obrigatório." });
+  }
+
+  const selectSql = "SELECT status FROM requisicoes WHERE id = ? LIMIT 1";
+  db.query(selectSql, [id], (errSel, rows) => {
+    if (errSel) {
+      console.error("Erro ao buscar requisição para cancelar:", errSel);
+      return res
+        .status(500)
+        .json({ message: "Erro ao buscar requisição." });
+    }
+    if (rows.length === 0) {
+      return res.status(404).json({ message: "Requisição não encontrada." });
+    }
+
+    const statusAnterior = rows[0].status;
+    const statusNovo = "CANCELADA";
+
+    if (statusAnterior === statusNovo) {
+      return res.json({ id, status: statusNovo, message: "Já estava cancelada." });
+    }
+
+    const updateSql = "UPDATE requisicoes SET status = ? WHERE id = ?";
+    db.query(updateSql, [statusNovo, id], (errUpd) => {
+      if (errUpd) {
+        console.error("Erro ao cancelar requisição:", errUpd);
+        return res
+          .status(500)
+          .json({ message: "Erro ao cancelar requisição." });
+      }
+
+      const logSql = `
+        INSERT INTO requisicao_status_log (
+          requisicao_id,
+          status_anterior,
+          status_novo,
+          usuario_id,
+          observacao
+        ) VALUES (?, ?, ?, ?, ?)
+      `;
+      const logParams = [
+        id,
+        statusAnterior,
+        statusNovo,
+        usuario_id,
+        observacao || "Cancelamento pelo representante",
+      ];
+
+      db.query(logSql, logParams, (errLog) => {
+        if (errLog) {
+          console.error(
+            "Erro ao gravar log de cancelamento:",
+            errLog
+          );
+        }
+
+        return res.json({
+          id,
+          status: statusNovo,
+          message: "Requisição cancelada com sucesso.",
+        });
+      });
+    });
+  });
+});
+
+/**
  * GET /requisicoes/:id
- * Usado no canhoto / visualização detalhada
+ * (canhoto / visualização detalhada)
  */
 router.get("/requisicoes/:id", (req, res) => {
   const { id } = req.params;
