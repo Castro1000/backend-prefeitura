@@ -582,10 +582,60 @@ app.post("/api/requisicoes/:id/validar", (req, res) => {
 });
 
 // ======================================================
-// >>>>>>> ROTA DO CANHOTO — Buscar uma requisição específica
+// ROTA DO CANHOTO / TRANSPORTADOR — Buscar por CÓDIGO PÚBLICO
 // ======================================================
+app.get("/api/requisicoes/codigo/:codigo", (req, res) => {
+  const { codigo } = req.params;
+
+  const sql = `
+    SELECT
+      r.*,
+      u.nome AS emissor_nome,
+      u.cpf  AS emissor_cpf,
+      s.nome AS setor_nome,
+      (
+        SELECT us.nome
+        FROM requisicao_status_log l
+        JOIN usuarios us ON us.id = l.usuario_id
+        WHERE l.requisicao_id = r.id
+          AND l.status_novo IN ('APROVADA','AUTORIZADA')
+        ORDER BY l.created_at DESC
+        LIMIT 1
+      ) AS representante_nome,
+      (
+        SELECT us.cpf
+        FROM requisicao_status_log l
+        JOIN usuarios us ON us.id = l.usuario_id
+        WHERE l.requisicao_id = r.id
+          AND l.status_novo IN ('APROVADA','AUTORIZADA')
+        ORDER BY l.created_at DESC
+        LIMIT 1
+      ) AS representante_cpf
+    FROM requisicoes r
+    LEFT JOIN usuarios u ON u.id = r.emissor_id
+    LEFT JOIN setores  s ON s.id = r.setor_id
+    WHERE r.codigo_publico = ?
+    LIMIT 1
+  `;
+
+  db.query(sql, [codigo], (err, rows) => {
+    if (err) {
+      console.error("Erro ao buscar requisição por codigo_publico:", err);
+      return res
+        .status(500)
+        .json({ error: "Erro ao buscar dados da requisição." });
+    }
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "Requisição não encontrada." });
+    }
+
+    res.json(rows[0]);
+  });
+});
+
 // ======================================================
-// >>>>>>> ROTA DO CANHOTO — Buscar uma requisição específica (por ID)
+// ROTA DO CANHOTO — Buscar uma requisição específica (por ID)
 // ======================================================
 app.get("/api/requisicoes/:id", (req, res) => {
   const { id } = req.params;
@@ -637,7 +687,6 @@ app.get("/api/requisicoes/:id", (req, res) => {
   });
 });
 
-
 // ======================================================
 // LISTA GERAL
 // ======================================================
@@ -676,7 +725,6 @@ app.get("/api/requisicoes", (req, res) => {
     res.json(rows);
   });
 });
-
 
 // ======================================================
 // PLUGA AS ROTAS /api/usuarios
