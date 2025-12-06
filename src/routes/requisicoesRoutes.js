@@ -35,24 +35,47 @@ function gerarCodigoPublicoUnico(callback) {
 }
 
 /**
+ * GET /requisicoes
+ * Lista requisicoes para painel (validador, relatórios, etc.)
+ * Aceita opcionalmente ?status=PENDENTE|APROVADA|CANCELADA
+ */
+router.get("/requisicoes", (req, res) => {
+  const { status } = req.query;
+
+  let sql = `
+    SELECT
+      r.*,
+      u.nome AS emissor_nome,
+      u.cpf  AS emissor_cpf,
+      s.nome AS setor_nome
+    FROM requisicoes r
+    LEFT JOIN usuarios u ON u.id = r.emissor_id
+    LEFT JOIN setores  s ON s.id = r.setor_id
+  `;
+  const params = [];
+
+  if (status) {
+    sql += " WHERE r.status = ?";
+    params.push(status);
+  }
+
+  sql += " ORDER BY r.created_at DESC";
+
+  db.query(sql, params, (err, rows) => {
+    if (err) {
+      console.error("Erro ao listar requisições:", err);
+      return res
+        .status(500)
+        .json({ message: "Erro ao listar requisições." });
+    }
+
+    return res.json(rows);
+  });
+});
+
+/**
  * POST /requisicoes
  * Cria uma nova requisição fluvial
- *
- * Espera algo assim no body:
- * {
- *   emissor_id: 7,
- *   setor_id: 1,
- *   passageiro_nome: "JOÃO",
- *   passageiro_cpf: "12345678901",
- *   passageiro_matricula: null,
- *   origem: "BORBA",
- *   destino: "MANAUS",
- *   data_ida: "2025-12-10",
- *   data_volta: null,
- *   horario_embarque: null,
- *   justificativa: "Motivo da viagem",
- *   observacoes: "{...json...}"
- * }
  */
 router.post("/requisicoes", (req, res) => {
   const {
@@ -125,10 +148,10 @@ router.post("/requisicoes", (req, res) => {
       destino,
       data_ida, // "YYYY-MM-DD"
       data_volta || null,
-      horario_embarque || null, // "HH:MM:SS" se algum dia vier
+      horario_embarque || null, // "HH:MM:SS"
       justificativa || null,
       status,
-      null, // qr_hash (podemos usar depois pra QR Code seguro)
+      null, // qr_hash (p/ futuro)
       observacoes || null,
     ];
 
@@ -142,7 +165,7 @@ router.post("/requisicoes", (req, res) => {
 
       const requisicaoId = result.insertId;
 
-      // tenta gravar o log de status (não impede o sucesso se der erro)
+      // log de status (não impede o sucesso se der erro)
       const logSql = `
         INSERT INTO requisicao_status_log (
           requisicao_id,
@@ -182,7 +205,7 @@ router.post("/requisicoes", (req, res) => {
 
 /**
  * GET /requisicoes/:id
- * (pensando no canhoto / visualização detalhada)
+ * Usado no canhoto / visualização detalhada
  */
 router.get("/requisicoes/:id", (req, res) => {
   const { id } = req.params;
