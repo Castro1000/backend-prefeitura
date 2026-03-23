@@ -10,10 +10,15 @@ app.use(cors());
 app.use(express.json());
 
 // ======================================================
+// CONFIGURAÇÃO PADRÃO
+// ======================================================
+
+const BARCO_PADRAO_PREFEITURA = "B/M TIO GRACY";
+
+// ======================================================
 // FUNÇÕES DE APOIO
 // ======================================================
 
-// Gera um código público de 10 caracteres (letras + números)
 function gerarCodigoPublico() {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
   let codigo = "";
@@ -23,7 +28,6 @@ function gerarCodigoPublico() {
   return codigo;
 }
 
-// Garante que o codigo_publico seja único na tabela `requisicoes`
 function gerarCodigoPublicoUnico(callback) {
   const codigo = gerarCodigoPublico();
 
@@ -35,7 +39,6 @@ function gerarCodigoPublicoUnico(callback) {
     }
 
     if (rows.length > 0) {
-      // já existe, tenta de novo
       return gerarCodigoPublicoUnico(callback);
     }
 
@@ -43,7 +46,6 @@ function gerarCodigoPublicoUnico(callback) {
   });
 }
 
-// Gera numero_formatado único no formato NNNN.../ANO (4 a 6 dígitos)
 function gerarNumeroRequisicaoUnico(ano, callback) {
   function tentarFaixa(min, max, proximaFaixa) {
     const numero = Math.floor(Math.random() * (max - min + 1)) + min;
@@ -57,31 +59,50 @@ function gerarNumeroRequisicaoUnico(ano, callback) {
       }
 
       if (rows.length > 0) {
-        // já existe → tenta novamente na mesma faixa / próxima
         return proximaFaixa();
       }
 
-      // único → retornamos
       callback(null, numStr);
     });
   }
 
-  // 1ª tentativa: 4 dígitos (1000–9999)
   function tentativa4() {
     tentarFaixa(1000, 9999, tentativa5);
   }
 
-  // 2ª tentativa: 5 dígitos (10000–99999)
   function tentativa5() {
     tentarFaixa(10000, 99999, tentativa6);
   }
 
-  // 3ª tentativa: 6 dígitos (100000–999999)
   function tentativa6() {
-    tentarFaixa(100000, 999999, tentativa6); // continua tentando até achar um livre
+    tentarFaixa(100000, 999999, tentativa6);
   }
 
   tentativa4();
+}
+
+function normalizarStatus(status = "") {
+  const s = String(status || "").toUpperCase().trim();
+  if (s === "AUTORIZADA") return "APROVADA";
+  return s;
+}
+
+function mapStatusTrecho(statusReq = "") {
+  const s = String(statusReq || "").toUpperCase().trim();
+  if (s === "APROVADA" || s === "AUTORIZADA") return "AUTORIZADA";
+  if (s === "REPROVADA" || s === "CANCELADA") return "REPROVADA";
+  if (s === "UTILIZADA") return "UTILIZADA";
+  if (s === "VENCIDA") return "VENCIDA";
+  return "PENDENTE";
+}
+
+function parseJsonSeguro(value) {
+  if (!value) return {};
+  try {
+    return JSON.parse(value);
+  } catch (_) {
+    return {};
+  }
 }
 
 // ======================================================
@@ -124,7 +145,7 @@ app.post("/api/login", (req, res) => {
       id: row.id,
       nome: row.nome,
       login: row.login,
-      tipo: (row.perfil || "").toLowerCase(), // emissor / representante / transportador / admin
+      tipo: (row.perfil || "").toLowerCase(),
       setor_id: row.setor_id,
       cpf: row.cpf || null,
       barco: row.barco || null,
@@ -132,7 +153,7 @@ app.post("/api/login", (req, res) => {
 
     res.json({
       user,
-      token: "ok", // placeholder
+      token: "ok",
     });
   });
 });
@@ -142,9 +163,6 @@ app.post("/api/login", (req, res) => {
 // ======================================================
 const router = express.Router();
 
-/**
- * LISTAR usuários (suporta filtro perfil: /api/usuarios?perfil=transportador)
- */
 router.get("/usuarios", (req, res) => {
   const { perfil } = req.query;
 
@@ -172,9 +190,6 @@ router.get("/usuarios", (req, res) => {
   });
 });
 
-/**
- * CRIAR novo usuário
- */
 router.post("/usuarios", (req, res) => {
   let { nome, login, senha, tipo, cpf, barco, setor_id } = req.body;
 
@@ -242,9 +257,6 @@ router.post("/usuarios", (req, res) => {
   });
 });
 
-/**
- * ATUALIZAR usuário
- */
 router.put("/usuarios/:id", (req, res) => {
   const { id } = req.params;
   let { nome, login, senha, tipo, cpf, barco, setor_id } = req.body;
@@ -307,9 +319,6 @@ router.put("/usuarios/:id", (req, res) => {
   });
 });
 
-/**
- * REMOVER usuário
- */
 router.delete("/usuarios/:id", (req, res) => {
   const { id } = req.params;
 
@@ -331,36 +340,61 @@ router.delete("/usuarios/:id", (req, res) => {
 // ROTAS DO MÓDULO FLUVIAL — REQUISIÇÕES
 // ======================================================
 
-// Criar requisição (numero_formatado aleatório tipo 4821/2025 ou 120493/2025)
+// Criar requisição
 app.post("/api/requisicoes", (req, res) => {
   const {
     emissor_id,
     passageiro_nome,
     passageiro_cpf,
     passageiro_matricula,
+    contato,
+    solicitante_nome,
+    tipo,
+    tipo_passagem,
+    tipo_viagem,
     setor_id,
     origem,
     destino,
     data_ida,
     data_volta,
     horario_embarque,
+    embarcacao,
+    embarcacao_volta,
     justificativa,
     observacoes,
+    cidade_origem_volta,
+    cidade_destino_volta,
+    validade_ate,
   } = req.body || {};
 
   if (!emissor_id || !passageiro_nome || !origem || !destino || !data_ida) {
     return res.status(400).json({ error: "Campos obrigatórios faltando." });
   }
 
+  if (
+    tipo_viagem === "IDA_E_VOLTA" &&
+    (!cidade_origem_volta || !cidade_destino_volta)
+  ) {
+    return res.status(400).json({
+      error: "Para ida e volta, informe origem e destino da viagem de volta.",
+    });
+  }
+
   const ano = new Date().getFullYear();
 
-  // 1) Gera código público único
+  const embarcacaoIdaFinal =
+    String(embarcacao || "").trim() || BARCO_PADRAO_PREFEITURA;
+
+  const embarcacaoVoltaFinal =
+    tipo_viagem === "IDA_E_VOLTA"
+      ? String(embarcacao_volta || "").trim() || BARCO_PADRAO_PREFEITURA
+      : null;
+
   gerarCodigoPublicoUnico((errCodigo, codigoPublico) => {
     if (errCodigo) {
       return res.status(500).json({ error: "Erro ao gerar código público." });
     }
 
-    // 2) Gera numero_formatado aleatório do tipo NNNN.../ANO
     gerarNumeroRequisicaoUnico(ano, (errNum, numero_formatado) => {
       if (errNum) {
         return res
@@ -368,7 +402,24 @@ app.post("/api/requisicoes", (req, res) => {
           .json({ error: "Erro ao gerar número da requisição." });
       }
 
-      // 3) Insere a requisição
+      const extrasFront = parseJsonSeguro(observacoes);
+
+      const observacoesFinal = JSON.stringify({
+        ...extrasFront,
+        tipo_solicitante: tipo || null,
+        barco_padrao_prefeitura: BARCO_PADRAO_PREFEITURA,
+        viagem_volta:
+          tipo_viagem === "IDA_E_VOLTA"
+            ? {
+                data_saida: data_volta || null,
+                origem: cidade_origem_volta || null,
+                destino: cidade_destino_volta || null,
+                embarcacao_volta: embarcacaoVoltaFinal,
+                validade_ate: validade_ate || null,
+              }
+            : null,
+      });
+
       const sqlInsert = `
         INSERT INTO requisicoes (
           codigo_publico,
@@ -377,18 +428,25 @@ app.post("/api/requisicoes", (req, res) => {
           passageiro_nome,
           passageiro_cpf,
           passageiro_matricula,
+          contato,
+          solicitante_nome,
+          tipo,
+          tipo_passagem,
+          tipo_viagem,
           setor_id,
           origem,
           destino,
           data_ida,
           data_volta,
           horario_embarque,
+          embarcacao,
+          embarcacao_volta,
           justificativa,
           status,
           qr_hash,
           observacoes,
           created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDENTE', NULL, ?, NOW())
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDENTE', NULL, ?, NOW())
       `;
 
       const paramsInsert = [
@@ -398,14 +456,21 @@ app.post("/api/requisicoes", (req, res) => {
         passageiro_nome,
         passageiro_cpf || null,
         passageiro_matricula || null,
+        contato || null,
+        solicitante_nome || null,
+        tipo || null,
+        tipo_passagem || null,
+        tipo_viagem || "IDA",
         setor_id || null,
         origem,
         destino,
         data_ida,
         data_volta || null,
         horario_embarque || null,
+        embarcacaoIdaFinal,
+        embarcacaoVoltaFinal,
         justificativa || null,
-        observacoes || null,
+        observacoesFinal || null,
       ];
 
       db.query(sqlInsert, paramsInsert, (errInsert, result) => {
@@ -416,21 +481,98 @@ app.post("/api/requisicoes", (req, res) => {
 
         const insertedId = result.insertId;
 
-        // 4) Log de status inicial
-        const logSql = `
-          INSERT INTO requisicao_status_log (
-            requisicao_id, status_anterior, status_novo, usuario_id, observacao, created_at
-          ) VALUES (?, NULL, 'PENDENTE', ?, 'Criação da requisição', NOW())
+        const trechoIdaSql = `
+          INSERT INTO requisicao_trechos (
+            requisicao_id,
+            tipo_trecho,
+            origem,
+            destino,
+            data_viagem,
+            embarcacao,
+            status,
+            created_at
+          ) VALUES (?, 'IDA', ?, ?, ?, ?, 'PENDENTE', NOW())
         `;
-        db.query(logSql, [insertedId, emissor_id], () => {});
 
-        // 5) Resposta
-        res.status(201).json({
-          id: insertedId,
-          codigo_publico: codigoPublico,
-          numero_formatado, // ex.: "4821/2025" ou "120493/2025"
-          status: "PENDENTE",
-        });
+        db.query(
+          trechoIdaSql,
+          [insertedId, origem, destino, data_ida, embarcacaoIdaFinal],
+          (errTrechoIda) => {
+            if (errTrechoIda) {
+              console.error("Erro ao criar trecho IDA:", errTrechoIda);
+              return res.status(500).json({
+                error: "Requisição criada, mas houve erro ao criar o trecho de ida.",
+              });
+            }
+
+            const finalizarResposta = () => {
+              const logSql = `
+                INSERT INTO requisicao_status_log (
+                  requisicao_id, status_anterior, status_novo, usuario_id, observacao, created_at
+                ) VALUES (?, NULL, 'PENDENTE', ?, 'Criação da requisição', NOW())
+              `;
+              db.query(logSql, [insertedId, emissor_id], () => {});
+
+              res.status(201).json({
+                id: insertedId,
+                codigo_publico: codigoPublico,
+                numero_formatado,
+                status: "PENDENTE",
+                embarcacao: embarcacaoIdaFinal,
+              });
+            };
+
+            if (tipo_viagem === "IDA_E_VOLTA") {
+              const trechoVoltaSql = `
+                INSERT INTO requisicao_trechos (
+                  requisicao_id,
+                  tipo_trecho,
+                  origem,
+                  destino,
+                  data_viagem,
+                  embarcacao,
+                  validade_ate,
+                  status,
+                  created_at
+                ) VALUES (?, 'VOLTA', ?, ?, ?, ?, ?, 'PENDENTE', NOW())
+              `;
+
+              db.query(
+                [
+                  trechoVoltaSql,
+                  [
+                    insertedId,
+                    cidade_origem_volta,
+                    cidade_destino_volta,
+                    data_volta || null,
+                    embarcacaoVoltaFinal,
+                    validade_ate || null,
+                  ],
+                ][0],
+                [
+                  insertedId,
+                  cidade_origem_volta,
+                  cidade_destino_volta,
+                  data_volta || null,
+                  embarcacaoVoltaFinal,
+                  validade_ate || null,
+                ],
+                (errTrechoVolta) => {
+                  if (errTrechoVolta) {
+                    console.error("Erro ao criar trecho VOLTA:", errTrechoVolta);
+                    return res.status(500).json({
+                      error: "Requisição criada, mas houve erro ao criar o trecho de volta.",
+                    });
+                  }
+
+                  finalizarResposta();
+                }
+              );
+            } else {
+              finalizarResposta();
+            }
+          }
+        );
       });
     });
   });
@@ -441,81 +583,193 @@ app.get("/api/requisicoes/emissor/:emissorId", (req, res) => {
   const { emissorId } = req.params;
 
   const sql = `
-    SELECT *
-    FROM requisicoes
-    WHERE emissor_id = ?
-    ORDER BY created_at DESC
+    SELECT
+      r.*,
+      u.nome AS emissor_nome,
+      u.cpf AS emissor_cpf,
+      s.nome AS setor_nome,
+      (
+        SELECT us.nome
+        FROM requisicao_status_log l
+        JOIN usuarios us ON us.id = l.usuario_id
+        WHERE l.requisicao_id = r.id
+          AND l.status_novo IN ('APROVADA','AUTORIZADA')
+        ORDER BY l.created_at DESC
+        LIMIT 1
+      ) AS representante_nome,
+      (
+        SELECT us.cpf
+        FROM requisicao_status_log l
+        JOIN usuarios us ON us.id = l.usuario_id
+        WHERE l.requisicao_id = r.id
+          AND l.status_novo IN ('APROVADA','AUTORIZADA')
+        ORDER BY l.created_at DESC
+        LIMIT 1
+      ) AS representante_cpf
+    FROM requisicoes r
+    LEFT JOIN usuarios u ON u.id = r.emissor_id
+    LEFT JOIN setores s ON s.id = r.setor_id
+    WHERE r.emissor_id = ?
+    ORDER BY r.created_at DESC
   `;
 
   db.query(sql, [emissorId], (err, rows) => {
     if (err) {
-      console.error("Erro ao listar requisições:", err);
-      return res.status(500).json({ error: "Erro ao listar requisições." });
+      console.error("Erro ao listar requisições do emissor:", err);
+      return res
+        .status(500)
+        .json({ error: "Erro ao listar requisições do emissor." });
     }
-    res.json(rows);
-  });
-});
 
-// Pendentes
-app.get("/api/requisicoes/pendentes", (req, res) => {
-  const sql = `
-    SELECT *
-    FROM requisicoes
-    WHERE status = 'PENDENTE'
-    ORDER BY created_at ASC
-  `;
-
-  db.query(sql, (err, rows) => {
-    if (err) {
-      console.error("Erro ao listar pendentes:", err);
-      return res.status(500).json({ error: "Erro ao listar pendentes." });
+    if (!rows.length) {
+      return res.json([]);
     }
-    res.json(rows);
+
+    const requisicoes = rows;
+    const ids = requisicoes.map((r) => r.id);
+
+    const sqlTrechos = `
+      SELECT *
+      FROM requisicao_trechos
+      WHERE requisicao_id IN (?)
+      ORDER BY
+        requisicao_id ASC,
+        CASE
+          WHEN UPPER(tipo_trecho) = 'IDA' THEN 1
+          WHEN UPPER(tipo_trecho) = 'VOLTA' THEN 2
+          ELSE 99
+        END,
+        id ASC
+    `;
+
+    db.query(sqlTrechos, [ids], (errTrechos, trechos) => {
+      if (errTrechos) {
+        console.error("Erro ao buscar trechos das requisições:", errTrechos);
+        return res.json(
+          requisicoes.map((r) => ({
+            ...r,
+            trechos: [],
+          }))
+        );
+      }
+
+      const mapaTrechos = new Map();
+
+      for (const t of trechos || []) {
+        const chave = t.requisicao_id;
+        if (!mapaTrechos.has(chave)) {
+          mapaTrechos.set(chave, []);
+        }
+        mapaTrechos.get(chave).push(t);
+      }
+
+      const resultado = requisicoes.map((r) => ({
+        ...r,
+        trechos: mapaTrechos.get(r.id) || [],
+      }));
+
+      return res.json(resultado);
+    });
   });
 });
 
 // Assinar (aprovar/reprovar)
 app.post("/api/requisicoes/:id/assinar", (req, res) => {
   const { id } = req.params;
-  const { representante_id, acao, motivo_recusa } = req.body;
+  const {
+    representante_id,
+    acao,
+    motivo_recusa,
+    transportador_id,
+    embarcacao,
+  } = req.body;
 
   if (!representante_id || !acao) {
     return res.status(400).json({ error: "Dados incompletos." });
   }
 
   const novoStatus = acao === "APROVAR" ? "APROVADA" : "REPROVADA";
+  const novoStatusTrechos = mapStatusTrecho(novoStatus);
 
-  const updateSql = `
-    UPDATE requisicoes
-    SET status = ?, updated_at = NOW()
+  const sqlAtual = `
+    SELECT id, status
+    FROM requisicoes
     WHERE id = ?
+    LIMIT 1
   `;
 
-  db.query(updateSql, [novoStatus, id], (err) => {
-    if (err) {
-      console.error("Erro ao atualizar status:", err);
-      return res.status(500).json({ error: "Erro ao atualizar status." });
+  db.query(sqlAtual, [id], (errAtual, rowsAtual) => {
+    if (errAtual) {
+      console.error("Erro ao buscar status atual:", errAtual);
+      return res.status(500).json({ error: "Erro ao buscar requisição." });
     }
 
-    const insertAss = `
-      INSERT INTO assinaturas_representante (
-        requisicao_id, representante_id, acao, motivo_recusa, created_at
-      ) VALUES (?, ?, ?, ?, NOW())
-    `;
-    db.query(
-      insertAss,
-      [id, representante_id, novoStatus, motivo_recusa || null],
-      () => {}
-    );
+    if (rowsAtual.length === 0) {
+      return res.status(404).json({ error: "Requisição não encontrada." });
+    }
 
-    const logSql = `
-      INSERT INTO requisicao_status_log (
-        requisicao_id, status_anterior, status_novo, usuario_id, observacao, created_at
-      ) VALUES (?, 'PENDENTE', ?, ?, 'Assinatura do representante', NOW())
-    `;
-    db.query(logSql, [id, novoStatus, representante_id], () => {});
+    const statusAnterior = rowsAtual[0].status || null;
 
-    res.json({ ok: true, status: novoStatus });
+    const campos = ["status = ?", "updated_at = NOW()"];
+    const params = [novoStatus];
+
+    if (typeof transportador_id !== "undefined") {
+      campos.push("transportador_id = ?");
+      params.push(transportador_id || null);
+    }
+
+    if (typeof embarcacao !== "undefined") {
+      campos.push("embarcacao = ?");
+      params.push(embarcacao || null);
+    }
+
+    params.push(id);
+
+    const updateSql = `
+      UPDATE requisicoes
+      SET ${campos.join(", ")}
+      WHERE id = ?
+    `;
+
+    db.query(updateSql, params, (errUpdate) => {
+      if (errUpdate) {
+        console.error("Erro ao atualizar status:", errUpdate);
+        return res.status(500).json({ error: "Erro ao atualizar status." });
+      }
+
+      const updateTrechosSql = `
+        UPDATE requisicao_trechos
+        SET status = ?, updated_at = NOW()
+        WHERE requisicao_id = ?
+      `;
+
+      db.query(updateTrechosSql, [novoStatusTrechos, id], (errTrechos) => {
+        if (errTrechos) {
+          console.error("Erro ao atualizar trechos:", errTrechos);
+          return res.status(500).json({ error: "Erro ao atualizar trechos." });
+        }
+
+        const insertAss = `
+          INSERT INTO assinaturas_representante (
+            requisicao_id, representante_id, acao, motivo_recusa, created_at
+          ) VALUES (?, ?, ?, ?, NOW())
+        `;
+        db.query(
+          insertAss,
+          [id, representante_id, novoStatus, motivo_recusa || null],
+          () => {}
+        );
+
+        const logSql = `
+          INSERT INTO requisicao_status_log (
+            requisicao_id, status_anterior, status_novo, usuario_id, observacao, created_at
+          ) VALUES (?, ?, ?, ?, 'Assinatura do representante', NOW())
+        `;
+        db.query(logSql, [id, statusAnterior, novoStatus, representante_id], () => {});
+
+        res.json({ ok: true, status: novoStatus });
+      });
+    });
   });
 });
 
@@ -528,57 +782,256 @@ app.post("/api/requisicoes/:id/validar", (req, res) => {
     codigo_lido,
     local_validacao,
     observacao,
+    trecho_id,
+    tipo_trecho,
   } = req.body;
 
   if (!transportador_id || !codigo_lido) {
     return res.status(400).json({ error: "Dados incompletos." });
   }
 
-  const sqlInsertVal = `
-    INSERT INTO validacoes_transportador (
-      requisicao_id,
-      transportador_id,
-      tipo_validacao,
-      codigo_lido,
-      local_validacao,
-      observacao,
-      created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, NOW())
+  const sqlTransportador = `
+    SELECT id, nome, barco, perfil, ativo
+    FROM usuarios
+    WHERE id = ? AND ativo = 1
+    LIMIT 1
   `;
 
-  db.query(
-    sqlInsertVal,
-    [
-      id,
-      transportador_id,
-      tipo_validacao || "EMBARQUE",
-      codigo_lido,
-      local_validacao || null,
-      observacao || null,
-    ],
-    (err) => {
-      if (err) {
-        console.error("Erro ao validar:", err);
+  db.query(sqlTransportador, [transportador_id], (errTransp, rowsTransp) => {
+    if (errTransp) {
+      console.error("Erro ao buscar transportador:", errTransp);
+      return res.status(500).json({ error: "Erro ao validar requisição." });
+    }
+
+    if (rowsTransp.length === 0) {
+      return res.status(404).json({ error: "Transportador não encontrado." });
+    }
+
+    const transportador = rowsTransp[0];
+    if ((transportador.perfil || "").toLowerCase() !== "transportador") {
+      return res.status(403).json({ error: "Usuário não é transportador." });
+    }
+
+    const barcoDoTransportador = transportador.barco || null;
+
+    if (!barcoDoTransportador) {
+      return res.status(400).json({
+        error: "Este transportador não possui barco cadastrado.",
+      });
+    }
+
+    const sqlReq = `
+      SELECT id, status
+      FROM requisicoes
+      WHERE id = ?
+      LIMIT 1
+    `;
+
+    db.query(sqlReq, [id], (errReq, rowsReq) => {
+      if (errReq) {
+        console.error("Erro ao buscar requisição:", errReq);
         return res.status(500).json({ error: "Erro ao validar requisição." });
       }
 
-      const updateStatus = `
-        UPDATE requisicoes
-        SET status = 'UTILIZADA', updated_at = NOW()
-        WHERE id = ?
-      `;
-      db.query(updateStatus, [id], () => {});
+      if (rowsReq.length === 0) {
+        return res.status(404).json({ error: "Requisição não encontrada." });
+      }
 
-      const logSql = `
-        INSERT INTO requisicao_status_log (
-          requisicao_id, status_anterior, status_novo, usuario_id, observacao, created_at
-        ) VALUES (?, 'APROVADA', 'UTILIZADA', ?, 'Validação pelo transportador', NOW())
-      `;
-      db.query(logSql, [id, transportador_id], () => {});
+      const reqAtual = rowsReq[0];
+      const statusAnteriorReq = reqAtual.status || null;
 
-      res.json({ ok: true, status: "UTILIZADA" });
-    }
-  );
+      let sqlTrecho = `
+        SELECT *
+        FROM requisicao_trechos
+        WHERE requisicao_id = ?
+          AND status = 'AUTORIZADA'
+      `;
+      const paramsTrecho = [id];
+
+      if (trecho_id) {
+        sqlTrecho += " AND id = ?";
+        paramsTrecho.push(trecho_id);
+      } else if (tipo_trecho) {
+        sqlTrecho += " AND tipo_trecho = ?";
+        paramsTrecho.push(String(tipo_trecho).toUpperCase());
+      }
+
+      sqlTrecho += " ORDER BY id ASC LIMIT 1";
+
+      db.query(sqlTrecho, paramsTrecho, (errTrecho, rowsTrecho) => {
+        if (errTrecho) {
+          console.error("Erro ao buscar trecho:", errTrecho);
+          return res.status(500).json({ error: "Erro ao validar requisição." });
+        }
+
+        if (rowsTrecho.length === 0) {
+          return res.status(400).json({
+            error: "Nenhum trecho autorizado disponível para validação.",
+          });
+        }
+
+        const trecho = rowsTrecho[0];
+
+        if (trecho.validade_ate) {
+          const hoje = new Date();
+          const hojeStr = hoje.toISOString().slice(0, 10);
+          if (String(trecho.validade_ate).slice(0, 10) < hojeStr) {
+            const sqlVencerTrecho = `
+              UPDATE requisicao_trechos
+              SET status = 'VENCIDA', updated_at = NOW()
+              WHERE id = ?
+            `;
+            return db.query(sqlVencerTrecho, [trecho.id], () => {
+              return res.status(400).json({
+                error: "Este trecho está com prazo vencido para utilização.",
+              });
+            });
+          }
+        }
+
+        const sqlInsertVal = `
+          INSERT INTO validacoes_transportador (
+            requisicao_id,
+            transportador_id,
+            tipo_validacao,
+            codigo_lido,
+            local_validacao,
+            observacao,
+            created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, NOW())
+        `;
+
+        db.query(
+          sqlInsertVal,
+          [
+            id,
+            transportador_id,
+            tipo_validacao || "EMBARQUE",
+            codigo_lido,
+            local_validacao || null,
+            observacao || null,
+          ],
+          (errVal) => {
+            if (errVal) {
+              console.error("Erro ao validar:", errVal);
+              return res.status(500).json({ error: "Erro ao validar requisição." });
+            }
+
+            const sqlUpdateTrecho = `
+              UPDATE requisicao_trechos
+              SET
+                transportador_id = ?,
+                embarcacao = ?,
+                status = 'UTILIZADA',
+                utilizado_em = NOW(),
+                updated_at = NOW()
+              WHERE id = ?
+            `;
+
+            db.query(
+              sqlUpdateTrecho,
+              [transportador_id, barcoDoTransportador, trecho.id],
+              (errUpdateTrecho) => {
+                if (errUpdateTrecho) {
+                  console.error("Erro ao atualizar trecho:", errUpdateTrecho);
+                  return res.status(500).json({
+                    error: "Erro ao finalizar validação do trecho.",
+                  });
+                }
+
+                const logSql = `
+                  INSERT INTO requisicao_status_log (
+                    requisicao_id, status_anterior, status_novo, usuario_id, observacao, created_at
+                  ) VALUES (?, ?, 'UTILIZADA', ?, ?, NOW())
+                `;
+                db.query(
+                  logSql,
+                  [
+                    id,
+                    statusAnteriorReq,
+                    transportador_id,
+                    `Validação pelo transportador no trecho ${trecho.tipo_trecho} com embarcação ${barcoDoTransportador}`,
+                  ],
+                  () => {}
+                );
+
+                const sqlVerificaTrechos = `
+                  SELECT
+                    SUM(CASE WHEN status IN ('AUTORIZADA', 'PENDENTE') THEN 1 ELSE 0 END) AS abertos,
+                    SUM(CASE WHEN status = 'UTILIZADA' THEN 1 ELSE 0 END) AS utilizados
+                  FROM requisicao_trechos
+                  WHERE requisicao_id = ?
+                `;
+
+                db.query(sqlVerificaTrechos, [id], (errCheck, rowsCheck) => {
+                  if (errCheck) {
+                    console.error("Erro ao verificar trechos:", errCheck);
+                    return res.json({
+                      ok: true,
+                      status: "UTILIZADA",
+                      trecho_id: trecho.id,
+                      tipo_trecho: trecho.tipo_trecho,
+                      embarcacao: barcoDoTransportador,
+                    });
+                  }
+
+                  const info = rowsCheck[0] || {};
+                  const abertos = Number(info.abertos || 0);
+
+                  if (abertos === 0) {
+                    const sqlUpdateReq = `
+                      UPDATE requisicoes
+                      SET
+                        status = 'UTILIZADA',
+                        transportador_id = ?,
+                        embarcacao = ?,
+                        updated_at = NOW()
+                      WHERE id = ?
+                    `;
+                    db.query(
+                      sqlUpdateReq,
+                      [transportador_id, barcoDoTransportador, id],
+                      () => {
+                        return res.json({
+                          ok: true,
+                          status: "UTILIZADA",
+                          trecho_id: trecho.id,
+                          tipo_trecho: trecho.tipo_trecho,
+                          embarcacao: barcoDoTransportador,
+                        });
+                      }
+                    );
+                  } else {
+                    const sqlUpdateReqParcial = `
+                      UPDATE requisicoes
+                      SET
+                        transportador_id = ?,
+                        embarcacao = ?,
+                        updated_at = NOW()
+                      WHERE id = ?
+                    `;
+                    db.query(
+                      sqlUpdateReqParcial,
+                      [transportador_id, barcoDoTransportador, id],
+                      () => {
+                        return res.json({
+                          ok: true,
+                          status: "UTILIZADA",
+                          trecho_id: trecho.id,
+                          tipo_trecho: trecho.tipo_trecho,
+                          embarcacao: barcoDoTransportador,
+                        });
+                      }
+                    );
+                  }
+                });
+              }
+            );
+          }
+        );
+      });
+    });
+  });
 });
 
 // ======================================================
@@ -613,7 +1066,7 @@ app.get("/api/requisicoes/codigo/:codigo", (req, res) => {
       ) AS representante_cpf
     FROM requisicoes r
     LEFT JOIN usuarios u ON u.id = r.emissor_id
-    LEFT JOIN setores  s ON s.id = r.setor_id
+    LEFT JOIN setores s ON s.id = r.setor_id
     WHERE r.codigo_publico = ?
     LIMIT 1
   `;
@@ -630,7 +1083,23 @@ app.get("/api/requisicoes/codigo/:codigo", (req, res) => {
       return res.status(404).json({ error: "Requisição não encontrada." });
     }
 
-    res.json(rows[0]);
+    const requisicao = rows[0];
+
+    db.query(
+      `SELECT * FROM requisicao_trechos WHERE requisicao_id = ? ORDER BY id ASC`,
+      [requisicao.id],
+      (errTrechos, trechos) => {
+        if (errTrechos) {
+          console.error("Erro ao buscar trechos da requisição:", errTrechos);
+          return res.json({ ...requisicao, trechos: [] });
+        }
+
+        res.json({
+          ...requisicao,
+          trechos: trechos || [],
+        });
+      }
+    );
   });
 });
 
@@ -683,7 +1152,23 @@ app.get("/api/requisicoes/:id", (req, res) => {
       return res.status(404).json({ error: "Requisição não encontrada." });
     }
 
-    res.json(rows[0]);
+    const requisicao = rows[0];
+
+    db.query(
+      `SELECT * FROM requisicao_trechos WHERE requisicao_id = ? ORDER BY id ASC`,
+      [requisicao.id],
+      (errTrechos, trechos) => {
+        if (errTrechos) {
+          console.error("Erro ao buscar trechos da requisição:", errTrechos);
+          return res.json({ ...requisicao, trechos: [] });
+        }
+
+        res.json({
+          ...requisicao,
+          trechos: trechos || [],
+        });
+      }
+    );
   });
 });
 
@@ -696,7 +1181,6 @@ app.get("/api/requisicoes", (req, res) => {
   let sql = "SELECT * FROM requisicoes WHERE 1=1";
   const params = [];
 
-  // filtro por código público (para o transportador digitar o código do canhoto)
   if (codigo_publico) {
     sql += " AND codigo_publico = ?";
     params.push(codigo_publico);
@@ -712,7 +1196,7 @@ app.get("/api/requisicoes", (req, res) => {
   }
   if (status && status !== "TODOS") {
     sql += " AND status = ?";
-    params.push(status);
+    params.push(normalizarStatus(status));
   }
 
   sql += " ORDER BY created_at DESC";
