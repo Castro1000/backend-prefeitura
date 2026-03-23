@@ -538,17 +538,7 @@ app.post("/api/requisicoes", (req, res) => {
               `;
 
               db.query(
-                [
-                  trechoVoltaSql,
-                  [
-                    insertedId,
-                    cidade_origem_volta,
-                    cidade_destino_volta,
-                    data_volta || null,
-                    embarcacaoVoltaFinal,
-                    validade_ate || null,
-                  ],
-                ][0],
+                trechoVoltaSql,
                 [
                   insertedId,
                   cidade_origem_volta,
@@ -578,7 +568,7 @@ app.post("/api/requisicoes", (req, res) => {
   });
 });
 
-// Listar por emissor
+// Listar por emissor - AGORA COM TRECHOS
 app.get("/api/requisicoes/emissor/:emissorId", (req, res) => {
   const { emissorId } = req.params;
 
@@ -670,6 +660,24 @@ app.get("/api/requisicoes/emissor/:emissorId", (req, res) => {
 
       return res.json(resultado);
     });
+  });
+});
+
+// Pendentes
+app.get("/api/requisicoes/pendentes", (req, res) => {
+  const sql = `
+    SELECT *
+    FROM requisicoes
+    WHERE status = 'PENDENTE'
+    ORDER BY created_at ASC
+  `;
+
+  db.query(sql, (err, rows) => {
+    if (err) {
+      console.error("Erro ao listar pendentes:", err);
+      return res.status(500).json({ error: "Erro ao listar pendentes." });
+    }
+    res.json(rows);
   });
 });
 
