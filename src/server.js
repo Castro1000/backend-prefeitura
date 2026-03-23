@@ -1,4 +1,3 @@
-// src/server.js
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
@@ -14,6 +13,7 @@ app.use(express.json());
 // ======================================================
 
 const BARCO_PADRAO_PREFEITURA = "B/M TIO GRACY";
+const LIMITE_DIAS_VALIDADE_PADRAO = 7;
 
 // ======================================================
 // FUNÇÕES DE APOIO
@@ -103,6 +103,50 @@ function parseJsonSeguro(value) {
   } catch (_) {
     return {};
   }
+}
+
+function addDaysToDate(dateStr, days) {
+  if (!dateStr) return null;
+  const d = new Date(`${String(dateStr).slice(0, 10)}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return null;
+  d.setDate(d.getDate() + Number(days || 0));
+  return d.toISOString().slice(0, 10);
+}
+
+function normalizarTipoTrecho(tipo = "") {
+  const t = String(tipo || "").toUpperCase().trim();
+  if (t === "IDA" || t === "VOLTA") return t;
+  return "";
+}
+
+function extrairConfigValidade(observacoes) {
+  const extras = parseJsonSeguro(observacoes);
+  const cfg = extras.validade_config || {};
+
+  return {
+    ativo: !!cfg.ativo,
+    aplica_em: normalizarTipoTrecho(cfg.aplica_em),
+    data_inicio: cfg.data_inicio || null,
+    data_fim: cfg.data_fim || null,
+    validade_ate_ida: cfg.validade_ate_ida || null,
+    validade_ate_volta: cfg.validade_ate_volta || null,
+    data_maxima: cfg.data_maxima || null,
+    dias_limite:
+      cfg.dias_limite != null
+        ? Number(cfg.dias_limite)
+        : LIMITE_DIAS_VALIDADE_PADRAO,
+  };
+}
+
+function montarObservacoesComValidade(observacoesOriginais, novasInfos = {}) {
+  const extras = parseJsonSeguro(observacoesOriginais);
+
+  extras.validade_config = {
+    ...(extras.validade_config || {}),
+    ...novasInfos,
+  };
+
+  return JSON.stringify(extras);
 }
 
 // ======================================================
@@ -364,7 +408,6 @@ app.post("/api/requisicoes", (req, res) => {
     observacoes,
     cidade_origem_volta,
     cidade_destino_volta,
-    validade_ate,
   } = req.body || {};
 
   if (!emissor_id || !passageiro_nome || !origem || !destino || !data_ida) {
@@ -390,6 +433,17 @@ app.post("/api/requisicoes", (req, res) => {
       ? String(embarcacao_volta || "").trim() || BARCO_PADRAO_PREFEITURA
       : null;
 
+  const cfgValidade = extrairConfigValidade(observacoes);
+  const validadeAteIda =
+    cfgValidade.ativo && cfgValidade.aplica_em === "IDA"
+      ? cfgValidade.validade_ate_ida || cfgValidade.data_fim || null
+      : null;
+
+  const validadeAteVolta =
+    cfgValidade.ativo && cfgValidade.aplica_em === "VOLTA"
+      ? cfgValidade.validade_ate_volta || cfgValidade.data_fim || null
+      : null;
+
   gerarCodigoPublicoUnico((errCodigo, codigoPublico) => {
     if (errCodigo) {
       return res.status(500).json({ error: "Erro ao gerar código público." });
@@ -408,6 +462,27 @@ app.post("/api/requisicoes", (req, res) => {
         ...extrasFront,
         tipo_solicitante: tipo || null,
         barco_padrao_prefeitura: BARCO_PADRAO_PREFEITURA,
+        validade_config: cfgValidade.ativo
+          ? {
+              ativo: true,
+              aplica_em: cfgValidade.aplica_em || null,
+              modo: "PERIODO",
+              data_inicio: cfgValidade.data_inicio || null,
+              data_fim: cfgValidade.data_fim || null,
+              data_maxima:
+                cfgValidade.data_maxima ||
+                addDaysToDate(cfgValidade.data_inicio, cfgValidade.dias_limite),
+              dias_limite:
+                cfgValidade.dias_limite || LIMITE_DIAS_VALIDADE_PADRAO,
+              validade_ate_ida: validadeAteIda,
+              validade_ate_volta: validadeAteVolta,
+              pode_ajuste_representante: true,
+            }
+          : {
+              ativo: false,
+              dias_limite: LIMITE_DIAS_VALIDADE_PADRAO,
+              pode_ajuste_representante: true,
+            },
         viagem_volta:
           tipo_viagem === "IDA_E_VOLTA"
             ? {
@@ -415,7 +490,7 @@ app.post("/api/requisicoes", (req, res) => {
                 origem: cidade_origem_volta || null,
                 destino: cidade_destino_volta || null,
                 embarcacao_volta: embarcacaoVoltaFinal,
-                validade_ate: validade_ate || null,
+                validade_ate: validadeAteVolta || null,
               }
             : null,
       });
@@ -489,14 +564,22 @@ app.post("/api/requisicoes", (req, res) => {
             destino,
             data_viagem,
             embarcacao,
+            validade_ate,
             status,
             created_at
-          ) VALUES (?, 'IDA', ?, ?, ?, ?, 'PENDENTE', NOW())
+          ) VALUES (?, 'IDA', ?, ?, ?, ?, ?, 'PENDENTE', NOW())
         `;
 
         db.query(
           trechoIdaSql,
-          [insertedId, origem, destino, data_ida, embarcacaoIdaFinal],
+          [
+            insertedId,
+            origem,
+            destino,
+            data_ida,
+            embarcacaoIdaFinal,
+            validadeAteIda || null,
+          ],
           (errTrechoIda) => {
             if (errTrechoIda) {
               console.error("Erro ao criar trecho IDA:", errTrechoIda);
@@ -545,7 +628,7 @@ app.post("/api/requisicoes", (req, res) => {
                   cidade_destino_volta,
                   data_volta || null,
                   embarcacaoVoltaFinal,
-                  validade_ate || null,
+                  validadeAteVolta || null,
                 ],
                 (errTrechoVolta) => {
                   if (errTrechoVolta) {
@@ -568,7 +651,7 @@ app.post("/api/requisicoes", (req, res) => {
   });
 });
 
-// Listar por emissor - AGORA COM TRECHOS
+// Listar por emissor - COM TRECHOS
 app.get("/api/requisicoes/emissor/:emissorId", (req, res) => {
   const { emissorId } = req.params;
 
@@ -776,6 +859,189 @@ app.post("/api/requisicoes/:id/assinar", (req, res) => {
         db.query(logSql, [id, statusAnterior, novoStatus, representante_id], () => {});
 
         res.json({ ok: true, status: novoStatus });
+      });
+    });
+  });
+});
+
+// AJUSTAR VALIDADE - SOMENTE REPRESENTANTE / VALIDADOR
+app.put("/api/requisicoes/:id/validade", (req, res) => {
+  const { id } = req.params;
+  const { representante_id, tipo_trecho, validade_ate } = req.body || {};
+
+  if (!representante_id || !tipo_trecho) {
+    return res.status(400).json({
+      error: "representante_id e tipo_trecho são obrigatórios.",
+    });
+  }
+
+  const trechoNormalizado = normalizarTipoTrecho(tipo_trecho);
+  if (!trechoNormalizado) {
+    return res.status(400).json({
+      error: "tipo_trecho deve ser IDA ou VOLTA.",
+    });
+  }
+
+  const sqlUsuario = `
+    SELECT id, perfil, nome
+    FROM usuarios
+    WHERE id = ? AND ativo = 1
+    LIMIT 1
+  `;
+
+  db.query(sqlUsuario, [representante_id], (errUser, rowsUser) => {
+    if (errUser) {
+      console.error("Erro ao validar representante:", errUser);
+      return res.status(500).json({ error: "Erro ao validar usuário." });
+    }
+
+    if (rowsUser.length === 0) {
+      return res.status(404).json({ error: "Usuário não encontrado." });
+    }
+
+    const usuario = rowsUser[0];
+    if ((usuario.perfil || "").toLowerCase() !== "representante") {
+      return res.status(403).json({
+        error: "Somente o validador/representante pode alterar a validade.",
+      });
+    }
+
+    const sqlReq = `
+      SELECT id, observacoes
+      FROM requisicoes
+      WHERE id = ?
+      LIMIT 1
+    `;
+
+    db.query(sqlReq, [id], (errReq, rowsReq) => {
+      if (errReq) {
+        console.error("Erro ao buscar requisição:", errReq);
+        return res.status(500).json({ error: "Erro ao buscar requisição." });
+      }
+
+      if (rowsReq.length === 0) {
+        return res.status(404).json({ error: "Requisição não encontrada." });
+      }
+
+      const requisicao = rowsReq[0];
+
+      const sqlTrecho = `
+        SELECT id, tipo_trecho, data_viagem, validade_ate
+        FROM requisicao_trechos
+        WHERE requisicao_id = ? AND tipo_trecho = ?
+        LIMIT 1
+      `;
+
+      db.query(sqlTrecho, [id, trechoNormalizado], (errTrecho, rowsTrecho) => {
+        if (errTrecho) {
+          console.error("Erro ao buscar trecho:", errTrecho);
+          return res.status(500).json({ error: "Erro ao buscar trecho." });
+        }
+
+        if (rowsTrecho.length === 0) {
+          return res.status(404).json({ error: "Trecho não encontrado." });
+        }
+
+        const trecho = rowsTrecho[0];
+
+        const sqlAtualizaTrecho = `
+          UPDATE requisicao_trechos
+          SET validade_ate = ?, updated_at = NOW()
+          WHERE id = ?
+        `;
+
+        db.query(
+          sqlAtualizaTrecho,
+          [validade_ate || null, trecho.id],
+          (errUpdateTrecho) => {
+            if (errUpdateTrecho) {
+              console.error("Erro ao atualizar validade do trecho:", errUpdateTrecho);
+              return res.status(500).json({
+                error: "Erro ao atualizar validade do trecho.",
+              });
+            }
+
+            const cfgAtual = extrairConfigValidade(requisicao.observacoes);
+
+            let novoCfg = {
+              ativo: true,
+              aplica_em: trechoNormalizado,
+              modo: "PERIODO",
+              data_inicio: trecho.data_viagem || null,
+              data_fim: validade_ate || null,
+              data_maxima: cfgAtual.data_maxima || null,
+              dias_limite:
+                cfgAtual.dias_limite || LIMITE_DIAS_VALIDADE_PADRAO,
+              validade_ate_ida:
+                trechoNormalizado === "IDA"
+                  ? validade_ate || null
+                  : cfgAtual.validade_ate_ida || null,
+              validade_ate_volta:
+                trechoNormalizado === "VOLTA"
+                  ? validade_ate || null
+                  : cfgAtual.validade_ate_volta || null,
+              pode_ajuste_representante: true,
+              ajustado_por_representante: true,
+              ajustado_em: new Date().toISOString(),
+            };
+
+            // se limpou validade e ambos ficarem nulos, pode marcar como inativo
+            if (
+              !novoCfg.validade_ate_ida &&
+              !novoCfg.validade_ate_volta
+            ) {
+              novoCfg = {
+                ...novoCfg,
+                ativo: false,
+                aplica_em: trechoNormalizado,
+              };
+            }
+
+            const observacoesAtualizadas = montarObservacoesComValidade(
+              requisicao.observacoes,
+              novoCfg
+            );
+
+            const sqlUpdateReq = `
+              UPDATE requisicoes
+              SET observacoes = ?, updated_at = NOW()
+              WHERE id = ?
+            `;
+
+            db.query(
+              sqlUpdateReq,
+              [observacoesAtualizadas, id],
+              (errUpdateReq) => {
+                if (errUpdateReq) {
+                  console.error("Erro ao atualizar observações:", errUpdateReq);
+                  return res.status(500).json({
+                    error: "Erro ao atualizar observações da requisição.",
+                  });
+                }
+
+                const logSql = `
+                  INSERT INTO requisicao_status_log (
+                    requisicao_id, status_anterior, status_novo, usuario_id, observacao, created_at
+                  ) VALUES (?, NULL, NULL, ?, ?, NOW())
+                `;
+
+                const obsLog = validade_ate
+                  ? `Validade do trecho ${trechoNormalizado} ajustada para ${validade_ate}`
+                  : `Validade do trecho ${trechoNormalizado} removida`;
+
+                db.query(logSql, [id, representante_id, obsLog], () => {});
+
+                return res.json({
+                  ok: true,
+                  requisicao_id: Number(id),
+                  trecho_id: trecho.id,
+                  tipo_trecho: trechoNormalizado,
+                  validade_ate: validade_ate || null,
+                });
+              }
+            );
+          }
+        );
       });
     });
   });
