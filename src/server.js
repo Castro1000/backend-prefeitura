@@ -61,24 +61,10 @@ function gerarNumeroRequisicaoUnico(ano, callback) {
 
     const ultimoNumero = Number(rows?.[0]?.ultimo_numero || 0);
     const proximoNumero = ultimoNumero + 1;
-
     const numeroFormatado = `${String(proximoNumero).padStart(4, "0")}/${ano}`;
-    callback(null, numeroFormatado);
+
+    return callback(null, numeroFormatado);
   });
-
-  function tentativa4() {
-    tentarFaixa(1000, 9999, tentativa5);
-  }
-
-  function tentativa5() {
-    tentarFaixa(10000, 99999, tentativa6);
-  }
-
-  function tentativa6() {
-    tentarFaixa(100000, 999999, tentativa6);
-  }
-
-  tentativa4();
 }
 
 function normalizarStatus(status = "") {
