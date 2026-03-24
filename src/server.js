@@ -420,6 +420,7 @@ app.post("/api/requisicoes", (req, res) => {
       : null;
 
   const cfgValidade = extrairConfigValidade(observacoes);
+
   const validadeAteIda =
     cfgValidade.ativo && cfgValidade.aplica_em === "IDA"
       ? cfgValidade.validade_ate_ida || cfgValidade.data_fim || null
@@ -971,11 +972,7 @@ app.put("/api/requisicoes/:id/validade", (req, res) => {
               ajustado_em: new Date().toISOString(),
             };
 
-            // se limpou validade e ambos ficarem nulos, pode marcar como inativo
-            if (
-              !novoCfg.validade_ate_ida &&
-              !novoCfg.validade_ate_volta
-            ) {
+            if (!novoCfg.validade_ate_ida && !novoCfg.validade_ate_volta) {
               novoCfg = {
                 ...novoCfg,
                 ativo: false,
@@ -1433,40 +1430,102 @@ app.get("/api/requisicoes/:id", (req, res) => {
 });
 
 // ======================================================
-// LISTA GERAL
+// LISTA GERAL - COM TRECHOS
 // ======================================================
 app.get("/api/requisicoes", (req, res) => {
   const { data_ini, data_fim, status, codigo_publico } = req.query;
 
-  let sql = "SELECT * FROM requisicoes WHERE 1=1";
+  let sql = `
+    SELECT
+      r.*,
+      u.nome AS emissor_nome,
+      u.cpf AS emissor_cpf,
+      s.nome AS setor_nome
+    FROM requisicoes r
+    LEFT JOIN usuarios u ON u.id = r.emissor_id
+    LEFT JOIN setores s ON s.id = r.setor_id
+    WHERE 1=1
+  `;
   const params = [];
 
   if (codigo_publico) {
-    sql += " AND codigo_publico = ?";
+    sql += " AND r.codigo_publico = ?";
     params.push(codigo_publico);
   }
 
   if (data_ini) {
-    sql += " AND data_ida >= ?";
+    sql += " AND r.data_ida >= ?";
     params.push(data_ini);
   }
+
   if (data_fim) {
-    sql += " AND data_ida <= ?";
+    sql += " AND r.data_ida <= ?";
     params.push(data_fim);
   }
+
   if (status && status !== "TODOS") {
-    sql += " AND status = ?";
+    sql += " AND r.status = ?";
     params.push(normalizarStatus(status));
   }
 
-  sql += " ORDER BY created_at DESC";
+  sql += " ORDER BY r.created_at ASC, r.id ASC";
 
   db.query(sql, params, (err, rows) => {
     if (err) {
       console.error("Erro ao listar requisições:", err);
       return res.status(500).json({ error: "Erro ao listar requisições." });
     }
-    res.json(rows);
+
+    if (!rows.length) {
+      return res.json([]);
+    }
+
+    const requisicoes = rows;
+    const ids = requisicoes.map((r) => r.id);
+
+    const sqlTrechos = `
+      SELECT *
+      FROM requisicao_trechos
+      WHERE requisicao_id IN (?)
+      ORDER BY
+        requisicao_id ASC,
+        CASE
+          WHEN UPPER(tipo_trecho) = 'IDA' THEN 1
+          WHEN UPPER(tipo_trecho) = 'VOLTA' THEN 2
+          ELSE 99
+        END,
+        data_viagem ASC,
+        id ASC
+    `;
+
+    db.query(sqlTrechos, [ids], (errTrechos, trechos) => {
+      if (errTrechos) {
+        console.error("Erro ao buscar trechos das requisições:", errTrechos);
+        return res.json(
+          requisicoes.map((r) => ({
+            ...r,
+            trechos: [],
+          }))
+        );
+      }
+
+      const mapaTrechos = new Map();
+
+      for (const t of trechos || []) {
+        const chave = t.requisicao_id;
+        if (!mapaTrechos.has(chave)) {
+          mapaTrechos.set(chave, []);
+        }
+        mapaTrechos.get(chave).push(t);
+      }
+
+      const resultado = requisicoes.map((r) => ({
+        ...r,
+        trechos: mapaTrechos.get(r.id) || [],
+      }));
+
+      res.json(resultado);
+    });
   });
 });
 
