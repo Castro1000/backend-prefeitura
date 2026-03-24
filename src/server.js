@@ -47,24 +47,24 @@ function gerarCodigoPublicoUnico(callback) {
 }
 
 function gerarNumeroRequisicaoUnico(ano, callback) {
-  function tentarFaixa(min, max, proximaFaixa) {
-    const numero = Math.floor(Math.random() * (max - min + 1)) + min;
-    const numStr = `${numero}/${ano}`;
+  const sql = `
+    SELECT MAX(CAST(SUBSTRING_INDEX(numero_formatado, '/', 1) AS UNSIGNED)) AS ultimo_numero
+    FROM requisicoes
+    WHERE numero_formatado LIKE ?
+  `;
 
-    const sql = "SELECT id FROM requisicoes WHERE numero_formatado = ? LIMIT 1";
-    db.query(sql, [numStr], (err, rows) => {
-      if (err) {
-        console.error("Erro ao verificar numero_formatado:", err);
-        return callback(err);
-      }
+  db.query(sql, [`%/${ano}`], (err, rows) => {
+    if (err) {
+      console.error("Erro ao buscar último numero_formatado:", err);
+      return callback(err);
+    }
 
-      if (rows.length > 0) {
-        return proximaFaixa();
-      }
+    const ultimoNumero = Number(rows?.[0]?.ultimo_numero || 0);
+    const proximoNumero = ultimoNumero + 1;
 
-      callback(null, numStr);
-    });
-  }
+    const numeroFormatado = `${String(proximoNumero).padStart(4, "0")}/${ano}`;
+    callback(null, numeroFormatado);
+  });
 
   function tentativa4() {
     tentarFaixa(1000, 9999, tentativa5);
